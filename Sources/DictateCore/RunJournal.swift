@@ -61,6 +61,11 @@ public struct RunJournal: Sendable {
 }
 
 public enum Instance {
+    /// True when launchd started this process from Dictate's LaunchAgent (and will restart it if it dies).
+    public static func isAgentLaunch(environment: [String: String]) -> Bool {
+        environment["XPC_SERVICE_NAME"] == LaunchAgent.label
+    }
+
     /// True when another copy of the app is already running.
     public static func isDuplicate(selfPID: Int32, runningPIDs: [Int32]) -> Bool {
         runningPIDs.contains { $0 != selfPID }

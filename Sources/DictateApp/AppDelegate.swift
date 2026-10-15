@@ -2,7 +2,6 @@ import AppKit
 import Combine
 import DictateCore
 import OSLog
-import ServiceManagement
 import SwiftUI
 
 @MainActor
@@ -23,8 +22,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var settingsWindow: NSWindow?
     private var onboardingWindow: NSWindow?
     private var permissionTimer: Timer?
+    private let events = EventLog(fileURL: FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Logs/Dictate/dictate.log"))
+    private var journal: RunJournal!
+    private var exitReason = "quit"
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        startJournal()
         settings = AppSettings(supportDirectory: supportDir)
         history = History(fileURL: supportDir.appendingPathComponent("history.json"))
         history.prune()
@@ -64,7 +68,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.hotkey.hotkey = key
         }
 
-        try? SMAppService.mainApp.register()
         startPermissionWatch()
         loadModel()
     }
@@ -79,6 +82,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        journal.markClean(reason: exitReason)
+        record("terminate reason=\(exitReason)")
         // ggml aborts at exit if the Whisper context is still alive, so unload it first.
         Task {
             await transcriber.close()
@@ -87,9 +92,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return .terminateLater
     }
 
+    // MARK: Run journal
+
+    /// Notes each launch and exit so an unexpected stop shows up in ~/Library/Logs/Dictate/dictate.log.
+    private func startJournal() {
+        journal = RunJournal(fileURL: supportDir.appendingPathComponent("run.json"))
+        let agent = Instance.isAgentLaunch(environment: ProcessInfo.processInfo.environment)
+        record("launch pid=\(getpid()) agent=\(agent) accessibility=\(AXIsProcessTrusted())")
+        if let previous = journal.begin(pid: getpid(), now: Date()) {
+            record("previous run ended unexpectedly (pid=\(previous.pid) launched \(previous.launchedAt.ISO8601Format()))")
+            let reports = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/DiagnosticReports")
+            for report in RunJournal.crashReports(in: reports, since: previous.launchedAt) {
+                record("crash report: \(report.path)")
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+                self?.pill.show("Dictate restarted after an unexpected stop", listening: false, fadeAfter: 3)
+            }
+        }
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.willPowerOffNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.exitReason = "logout" }
+        }
+    }
+
+    private func record(_ message: String) {
+        events.write(message)
+        log.info("\(message, privacy: .public)")
+    }
+
     private func makePolisher() -> Polisher {
-        let keychain = settings.keychain
-        return Polisher(transport: URLSessionTransport(), apiKey: { keychain.read() }, model: settings.model)
+        let apiKey = settings.apiKey
+        return Polisher(transport: URLSessionTransport(), apiKey: { apiKey.value() }, model: settings.model)
     }
 
     // MARK: Model
@@ -166,7 +198,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let t = pipeline.lastTimings, case .inserted = outcome {
             log.info("dictation transcribe=\(t.transcribe, format: .fixed(precision: 2))s polish=\(t.polish, format: .fixed(precision: 2))s insert=\(t.insert, format: .fixed(precision: 2))s total=\(t.total, format: .fixed(precision: 2))s")
         }
-        if case .failed(let message) = outcome { log.error("dictation failed: \(message, privacy: .public)") }
+        if case .failed(let message) = outcome { record("dictation failed: \(message)") }
     }
 
     // MARK: Windows

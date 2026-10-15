@@ -65,4 +65,10 @@ private func tempDir() -> URL {
         #expect(Instance.isDuplicate(selfPID: 5, runningPIDs: [5, 9]) == true)
         #expect(Instance.isDuplicate(selfPID: 5, runningPIDs: []) == false)
     }
+
+    @Test func agentLaunchIsRecognized() {
+        #expect(Instance.isAgentLaunch(environment: ["XPC_SERVICE_NAME": "com.leigh.dictate.keepalive"]))
+        #expect(!Instance.isAgentLaunch(environment: ["XPC_SERVICE_NAME": "application.com.leigh.dictate.123.456"]))
+        #expect(!Instance.isAgentLaunch(environment: [:]))
+    }
 }

@@ -8,6 +8,9 @@ final class AppSettings: ObservableObject {
 
     private let defaults = UserDefaults.standard
     let keychain = KeychainStore()
+    /// Read once, off the main thread: after an update macOS may ask to allow Keychain access, and
+    /// Dictate must keep working (unpolished) while that prompt waits.
+    let apiKey: CachedSecret
     let vocabularyStore: Vocabulary
 
     @Published var model: String { didSet { defaults.set(model, forKey: "polishModel") } }
@@ -25,13 +28,22 @@ final class AppSettings: ObservableObject {
         overrides = raw.compactMapValues(Style.init(rawValue:))
         hotkey = defaults.string(forKey: "hotkey").flatMap(Hotkey.init(rawValue:)) ?? .default
         vocabulary = vocabularyStore.load()
-        hasKey = keychain.read() != nil
+        let keychain = keychain
+        apiKey = CachedSecret { keychain.read() }
+        hasKey = false
+        Task.detached { [apiKey] in
+            let found = apiKey.value() != nil
+            await MainActor.run { [weak self] in self?.hasKey = found }
+        }
     }
 
     func saveKey(_ key: String) {
         let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty { try? keychain.delete() } else { try? keychain.write(trimmed) }
-        hasKey = keychain.read() != nil
+        do {
+            if trimmed.isEmpty { try keychain.delete() } else { try keychain.write(trimmed) }
+            apiKey.set(trimmed.isEmpty ? nil : trimmed)
+            hasKey = !trimmed.isEmpty
+        } catch {}
     }
 
     var router: StyleRouter { StyleRouter(overrides: overrides) }
