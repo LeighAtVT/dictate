@@ -1,0 +1,5 @@
+.build/
+*.app
+.superpowers/
+Vendor/
+docs/superpowers/
