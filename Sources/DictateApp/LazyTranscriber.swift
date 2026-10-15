@@ -12,10 +12,10 @@ final class LazyTranscriber: Transcribing, @unchecked Sendable {
 
     var isLoaded: Bool { lock.withLock { loaded != nil } }
 
-    func transcribe(_ samples: [Float], vocabulary: [String]) async throws -> String {
+    func transcribe(_ samples: [Float], vocabulary: [String], language: String) async throws -> String {
         let t = lock.withLock { loaded }
         guard let t else { throw TranscriberError(description: "The speech model is still downloading") }
-        return try await t.transcribe(samples, vocabulary: vocabulary)
+        return try await t.transcribe(samples, vocabulary: vocabulary, language: language)
     }
 
     func close() async {

@@ -17,8 +17,10 @@ final class FakeTranscriber: Transcribing, @unchecked Sendable {
     var calls = 0
     var gate: CheckedContinuation<Void, Never>?
     var suspend = false
-    func transcribe(_ samples: [Float], vocabulary: [String]) async throws -> String {
+    var languages: [String] = []
+    func transcribe(_ samples: [Float], vocabulary: [String], language: String) async throws -> String {
         calls += 1
+        languages.append(language)
         if suspend { await withCheckedContinuation { gate = $0 } }
         if let error { throw error }
         return text

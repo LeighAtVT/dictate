@@ -31,6 +31,18 @@ struct TranscriberTests {
         #expect(text.lowercased().contains("hello"))
     }
 
+    @Test func transcribesSpokenLanguage() async throws {
+        let t = try Transcriber(modelURL: realModelURL)
+        let spanish = try loadFixture("spanish-1")
+        let withCode = try await t.transcribe(spanish, vocabulary: [], language: "es").lowercased()
+        let detected = try await t.transcribe(spanish, vocabulary: [], language: "auto").lowercased()
+        let english = try await t.transcribe(try loadFixture("hello"), vocabulary: [], language: "auto").lowercased()
+        await t.close()
+        #expect(withCode.contains("mañana") && withCode.contains("reunión"), "\(withCode)")
+        #expect(detected.contains("reunión"), "\(detected)")
+        #expect(english.contains("hello"), "\(english)")
+    }
+
     @Test func chunksLongAudio() async throws {
         let t = try Transcriber(modelURL: realModelURL)
         let hello = try loadFixture("hello")
