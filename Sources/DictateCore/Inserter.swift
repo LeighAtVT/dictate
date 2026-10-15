@@ -5,10 +5,12 @@ public protocol Pasteboarding: AnyObject {
     func snapshot() -> [[String: Data]]
     func restore(_ items: [[String: Data]])
     func setString(_ s: String)
+    func readString() -> String?
 }
 
 public protocol KeySending {
     func sendCommandV()
+    func sendCommandC()
 }
 
 public enum InsertResult: Equatable, Sendable {
@@ -90,17 +92,25 @@ public final class SystemPasteboard: Pasteboarding {
         pb.clearContents()
         pb.setString(s, forType: .string)
     }
+
+    public func readString() -> String? {
+        pb.string(forType: .string)
+    }
 }
 
 public struct CGEventKeySender: KeySending {
     static let vKey: CGKeyCode = 9
+    static let cKey: CGKeyCode = 8
 
     public init() {}
 
-    public func sendCommandV() {
+    public func sendCommandV() { sendCommand(Self.vKey) }
+    public func sendCommandC() { sendCommand(Self.cKey) }
+
+    private func sendCommand(_ key: CGKeyCode) {
         let source = CGEventSource(stateID: .combinedSessionState)
         for down in [true, false] {
-            let event = CGEvent(keyboardEventSource: source, virtualKey: Self.vKey, keyDown: down)
+            let event = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: down)
             event?.flags = .maskCommand
             event?.post(tap: .cghidEventTap)
         }
