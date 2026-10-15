@@ -19,9 +19,7 @@ import ServiceManagement
     }
 
     if Instance.isDuplicate(selfPID: getpid(), runningPIDs: others()) { exit(0) }
-    // Earlier builds used a login item and a bundled agent; the path-based agent replaces both.
-    try? SMAppService.mainApp.unregister()
-    try? SMAppService.agent(plistName: "com.leigh.dictate.agent.plist").unregister()
+    try? SMAppService.mainApp.unregister() // v1.0 used a login item; the agent replaces it
 
     let log = EventLog(fileURL: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/Dictate/dictate.log"))
     guard let executable = Bundle.main.executablePath, LaunchAgent.canInstall(executable: executable) else {

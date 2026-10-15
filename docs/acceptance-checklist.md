@@ -18,5 +18,13 @@ Hold **Right Option**, speak, release. Tick each line when it behaves as describ
 | 12 | Silence | Hold the key 2 s without speaking | "Didn't catch that"; nothing typed |
 | 13 | Menu bar | Paste raw instead / Copy last / History | Each works |
 | 14 | Wispr Flow | Quit Wispr Flow (both use Fn) | Only Dictate responds to Fn |
-| 15 | Rebuild | Run `scripts/build-app.sh` again | No new permission prompts |
+| 15 | Rebuild | Run `scripts/build-app.sh` again | No new Microphone/Accessibility prompts (macOS may ask once to use the Keychain key: click Always Allow) |
 | 16 | Speed | Console.app, filter "com.leigh.dictate" | total under 1.5 s raw / 3 s polished |
+| 17 | Crash recovery | `kill -9` the Dictate process | Back within ~10 s; `~/Library/Logs/Dictate/dictate.log` says "previous run ended unexpectedly" |
+| 18 | Quit | Menu → Quit | Stays closed; opening Dictate starts it again |
+| 19 | Voice edit | Highlight a paragraph in Slack, hold Fn + Shift, say "make this friendlier" | Paragraph replaced with the rewrite |
+| 20 | Voice edit, no selection | Hold Fn + Shift with nothing highlighted | "Highlight text first"; nothing changes |
+| 21 | Note to self | Hold Fn + Control, say "call the dentist tomorrow" | "Saved to Tasks"; task appears in Yardmaster |
+| 22 | Note without Yardmaster | Quit Yardmaster, repeat 21 | "Saved to Dictate Notes"; line added to ~/Documents/Dictate Notes.md |
+| 23 | Shortcut | Add "my zoom link" in Settings → Shortcuts, then say it | The saved link pastes exactly |
+| 24 | Translate | Settings → Language: I speak Spanish, Paste in English; say a Spanish sentence | English pastes |
