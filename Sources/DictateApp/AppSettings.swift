@@ -12,6 +12,7 @@ final class AppSettings: ObservableObject {
     /// Dictate must keep working (unpolished) while that prompt waits.
     let apiKey: CachedSecret
     let vocabularyStore: Vocabulary
+    let shortcutStore: ShortcutStore
 
     @Published var model: String { didSet { defaults.set(model, forKey: "polishModel") } }
     @Published var overrides: [String: Style] {
@@ -19,6 +20,9 @@ final class AppSettings: ObservableObject {
     }
     @Published var hotkey: Hotkey { didSet { defaults.set(hotkey.rawValue, forKey: "hotkey") } }
     @Published var vocabulary: [String] { didSet { try? vocabularyStore.save(vocabulary) } }
+    @Published var shortcuts: [Shortcut] { didSet { try? shortcutStore.save(shortcuts) } }
+    @Published var spokenLanguage: String { didSet { defaults.set(spokenLanguage, forKey: "spokenLanguage") } }
+    @Published var pasteLanguage: String { didSet { defaults.set(pasteLanguage, forKey: "pasteLanguage") } }
     @Published private(set) var hasKey: Bool
 
     init(supportDirectory: URL) {
@@ -28,6 +32,10 @@ final class AppSettings: ObservableObject {
         overrides = raw.compactMapValues(Style.init(rawValue:))
         hotkey = defaults.string(forKey: "hotkey").flatMap(Hotkey.init(rawValue:)) ?? .default
         vocabulary = vocabularyStore.load()
+        shortcutStore = ShortcutStore(fileURL: supportDirectory.appendingPathComponent("shortcuts.json"))
+        shortcuts = shortcutStore.load()
+        spokenLanguage = defaults.string(forKey: "spokenLanguage") ?? LanguageSettings.default.spoken
+        pasteLanguage = defaults.string(forKey: "pasteLanguage") ?? LanguageSettings.default.paste
         let keychain = keychain
         apiKey = CachedSecret { keychain.read() }
         hasKey = false
@@ -47,4 +55,5 @@ final class AppSettings: ObservableObject {
     }
 
     var router: StyleRouter { StyleRouter(overrides: overrides) }
+    var language: LanguageSettings { LanguageSettings(spoken: spokenLanguage, paste: pasteLanguage) }
 }

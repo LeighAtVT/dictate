@@ -37,7 +37,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pipeline = Pipeline(recorder: AudioRecorder(), transcriber: transcriber, context: context,
                             router: { [unowned self] in settings.router }, polisher: makePolisher(), inserter: inserter,
                             history: history, vocabulary: { [unowned self] in settings.vocabulary },
-                            transcriberReady: { [transcriber] in transcriber.isLoaded })
+                            transcriberReady: { [transcriber] in transcriber.isLoaded },
+                            shortcuts: { [unowned self] in settings.shortcuts },
+                            selection: SelectionReader(axSelectedText: { context.selectedText() }, pasteboard: SystemPasteboard(), keys: CGEventKeySender()),
+                            notes: NoteSaver(transport: URLSessionTransport(), token: { NoteSaver.defaultToken() },
+                                             fileURL: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Documents/Dictate Notes.md")),
+                            hasKey: { [unowned self] in settings.hasKey },
+                            language: { [unowned self] in settings.language })
         pipeline.onStateChange = { [weak self] in self?.render($0) }
 
         statusItem = StatusItemController(history: history, actions: .init(
