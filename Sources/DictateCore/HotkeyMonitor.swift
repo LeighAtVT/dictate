@@ -7,18 +7,24 @@ public final class HotkeyMonitor: @unchecked Sendable { // used only on the main
     /// Changing the key resets any dictation in progress.
     public var hotkey: Hotkey {
         didSet {
-            if machine.state != .idle { onAction(.cancelRecording) }
+            if machine.state != .idle { onAction(.cancelRecording, .dictate) }
             machine = HotkeyStateMachine()
+            modes = ModeTracker(hotkey: hotkey)
         }
     }
 
-    private let onAction: (HotkeyAction) -> Void
+    /// Called during a recording when Shift or Control changes what it's for.
+    public var onModeChange: ((DictationMode) -> Void)?
+
+    private let onAction: (HotkeyAction, DictationMode) -> Void
     private var machine = HotkeyStateMachine()
+    private var modes: ModeTracker
     private var tap: CFMachPort?
 
-    public init(hotkey: Hotkey = .default, onAction: @escaping (HotkeyAction) -> Void) {
+    public init(hotkey: Hotkey = .default, onAction: @escaping (HotkeyAction, DictationMode) -> Void) {
         self.hotkey = hotkey
         self.onAction = onAction
+        modes = ModeTracker(hotkey: hotkey)
     }
 
     /// Returns false when Accessibility permission has not been granted.
@@ -50,16 +56,22 @@ public final class HotkeyMonitor: @unchecked Sendable { // used only on the main
             hotkeyEvent = event.getIntegerValueField(.keyboardEventKeycode) == Self.escapeKeyCode ? .escapeDown : .otherKeyDown
         case .flagsChanged where event.getIntegerValueField(.keyboardEventKeycode) == hotkey.keyCode:
             hotkeyEvent = hotkey.isDown(flags: event.flags.rawValue) ? .keyDown(now) : .keyUp(now)
+        case .flagsChanged:
+            // Shift or Control during a recording picks edit or note mode; it never cancels.
+            if machine.state != .idle, let mode = modes.update(flags: event.flags.rawValue) { onModeChange?(mode) }
+            hotkeyEvent = nil
         default:
             hotkeyEvent = nil
         }
         guard let hotkeyEvent else { return }
-        dispatch(hotkeyEvent)
+        dispatch(hotkeyEvent, flags: event.flags.rawValue)
     }
 
-    private func dispatch(_ event: HotkeyEvent) {
+    private func dispatch(_ event: HotkeyEvent, flags: UInt64 = 0) {
         let action = machine.handle(event)
-        if action != .none { onAction(action) }
+        if action == .beginRecording { modes.begin(flags: flags) } // modifiers already down count too
+        if action != .none { onAction(action, modes.mode) }
+        if action == .beginRecording, modes.mode != .dictate { onModeChange?(modes.mode) }
         if machine.awaitingSecondTap {
             DispatchQueue.main.asyncAfter(deadline: .now() + HotkeyStateMachine.doubleTapWindow) { [weak self] in
                 self?.dispatch(.timeout(ProcessInfo.processInfo.systemUptime))

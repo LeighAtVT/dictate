@@ -59,7 +59,8 @@ public final class Pipeline {
     }
 
     /// Returns nil when the action was ignored (busy, or nothing to finish).
-    public func handle(_ action: HotkeyAction) async -> PipelineOutcome? {
+    /// `mode` is what the modifiers held so far chose; the value given with `.finishRecording` wins.
+    public func handle(_ action: HotkeyAction, mode: DictationMode = .dictate) async -> PipelineOutcome? {
         switch action {
         case .none: return nil
         case .beginRecording: return begin()
@@ -67,7 +68,7 @@ public final class Pipeline {
             if target != nil { onStateChange?(.locked) }
             return nil
         case .cancelRecording: return cancel()
-        case .finishRecording: return await finish()
+        case .finishRecording: return await finish(mode)
         }
     }
 
@@ -101,7 +102,7 @@ public final class Pipeline {
         return .cancelled
     }
 
-    private func finish() async -> PipelineOutcome? {
+    private func finish(_ mode: DictationMode) async -> PipelineOutcome? {
         guard let target else { return nil }
         self.target = nil
         isBusy = true

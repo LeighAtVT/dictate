@@ -53,9 +53,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.hasKey = { [unowned self] in settings.hasKey }
         statusItem.permissionsOK = { Permissions.allGranted }
 
-        hotkey = HotkeyMonitor(hotkey: settings.hotkey) { [weak self] action in
+        hotkey = HotkeyMonitor(hotkey: settings.hotkey) { [weak self] action, mode in
             guard let self else { return }
-            Task { @MainActor in self.report(await self.pipeline.handle(action)) }
+            Task { @MainActor in self.report(await self.pipeline.handle(action, mode: mode)) }
+        }
+        hotkey.onModeChange = { [weak self] mode in
+            // Queued behind the begin action, so the pill is already showing.
+            Task { @MainActor in
+                guard let self, self.pipeline.isListening else { return }
+                switch mode {
+                case .edit: self.pill.show("Editing selection…", listening: true)
+                case .note: self.pill.show("Note to self…", listening: true)
+                case .dictate: break
+                }
+            }
         }
 
         // Rebuild the polisher when the model changes so the next dictation uses it.
