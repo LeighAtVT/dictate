@@ -69,6 +69,7 @@ The first note saved to `Dictate Notes.md` makes macOS ask whether Dictate can u
    ```sh
    launchctl bootout gui/$(id -u)/com.leigh.dictate.keepalive
    rm ~/Library/LaunchAgents/com.leigh.dictate.keepalive.plist
+   security delete-generic-password -s com.leigh.dictate -a openrouter   # your saved OpenRouter key
    ```
 3. Drag **Dictate** from Applications to the Trash. To remove its settings, history and speech model too, delete `~/Library/Application Support/Dictate`.
 

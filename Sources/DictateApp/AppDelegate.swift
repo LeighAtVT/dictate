@@ -87,6 +87,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private var settingsObserver: Any?
+    private var modelLoad: Task<Void, Never>?
     private var mode = DictationMode.dictate
     private var modeLabel: String? {
         switch mode {
@@ -107,8 +108,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         journal.markClean(reason: exitReason)
         record("terminate reason=\(exitReason)")
         // ggml aborts at exit if the Whisper context is still alive, so unload it first.
-        Task {
+        Task { [modelLoad] in
             await transcriber.close()
+            // A load still creating the model would leave a live context at exit; give it up to 5 s to
+            // finish (it then frees the model itself, since the transcriber is closed).
+            if let modelLoad {
+                await withTaskGroup(of: Void.self) { group in
+                    group.addTask { await modelLoad.value }
+                    group.addTask { try? await Task.sleep(for: .seconds(5)) }
+                    await group.next()
+                    group.cancelAll()
+                }
+            }
             NSApp.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater
@@ -152,7 +163,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let store = ModelStore(directory: supportDir.appendingPathComponent("models"), spec: .largeV3TurboQ5, downloader: URLSessionDownloader())
         statusItem.modelStatus = "Preparing speech model…"
         refreshIcon()
-        Task.detached { [transcriber] in
+        modelLoad = Task.detached { [transcriber] in
             do {
                 try await store.ensureModel { fraction in
                     Task { @MainActor [weak self] in
