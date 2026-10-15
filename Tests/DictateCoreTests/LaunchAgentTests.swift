@@ -23,6 +23,21 @@ import Testing
     @Test func translocatedCopiesAreNotInstalled() {
         #expect(LaunchAgent.canInstall(executable: "/Applications/Dictate.app/Contents/MacOS/Dictate"))
         #expect(!LaunchAgent.canInstall(executable: "/private/var/folders/x/AppTranslocation/ABC/d/Dictate.app/Contents/MacOS/Dictate"))
+        #expect(!LaunchAgent.canInstall(executable: "/Users/me/repos/dictate/.build/debug/Dictate")) // bare dev build
+    }
+
+    @Test func cachedSecretNeverBlocksWhileLoading() async {
+        let gate = DispatchSemaphore(value: 0)
+        let secret = CachedSecret { gate.wait(); return "k" } // like a Keychain prompt nobody has answered
+        let loader = Task.detached { secret.value() }
+        try? await Task.sleep(for: .milliseconds(50))
+        let start = Date()
+        #expect(secret.value() == nil) // still loading: answer right away
+        #expect(Date().timeIntervalSince(start) < 0.5)
+        secret.set("typed") // saving a key mid-load doesn't block either, and wins
+        gate.signal()
+        #expect(await loader.value == "typed")
+        #expect(secret.value() == "typed")
     }
 
     @Test func cachedSecretLoadsOnce() {

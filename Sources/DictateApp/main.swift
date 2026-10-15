@@ -22,8 +22,9 @@ import ServiceManagement
     try? SMAppService.mainApp.unregister() // v1.0 used a login item; the agent replaces it
 
     let log = EventLog(fileURL: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/Dictate/dictate.log"))
-    guard let executable = Bundle.main.executablePath, LaunchAgent.canInstall(executable: executable) else {
-        log.write("handoff: running from a temporary location; move Dictate to Applications for auto-restart")
+    guard Bundle.main.bundleIdentifier == "com.leigh.dictate", let executable = Bundle.main.executablePath,
+          LaunchAgent.canInstall(executable: executable) else {
+        log.write("handoff: not an installed app bundle; running without auto-restart")
         return
     }
     let data = LaunchAgent.plistData(executable: executable)

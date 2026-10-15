@@ -32,8 +32,10 @@ public struct ModeTracker: Sendable {
         held = flags
     }
 
-    /// Returns the new mode when this change altered it.
+    /// Returns the new mode when this change altered it. Modifiers only count while the dictation key is
+    /// held, so typing a capital letter during hands-free dictation doesn't turn it into an edit.
     public mutating func update(flags: UInt64) -> DictationMode? {
+        guard hotkey.isDown(flags: flags) else { return nil }
         let before = mode
         held |= flags
         return mode == before ? nil : mode

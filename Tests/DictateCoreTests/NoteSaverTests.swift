@@ -72,6 +72,14 @@ final class RecordingTransport: HTTPTransport, @unchecked Sendable {
         #expect(try String(contentsOf: file, encoding: .utf8) == expectedLine + expectedLine)
     }
 
+    @Test func multiLineNotesStayOneChecklistItem() async throws {
+        try Data("# My notes".utf8).write(to: file) // no trailing newline
+        #expect(await saver(RecordingTransport(), token: nil).save("Call the dentist\n\nabout Tuesday") == .file)
+        let lines = try String(contentsOf: file, encoding: .utf8).split(separator: "\n", omittingEmptySubsequences: false)
+        #expect(lines[0] == "# My notes")
+        #expect(lines[1].hasSuffix("— Call the dentist about Tuesday"))
+    }
+
     @Test func slowYardmasterFallsBack() async {
         let t = RecordingTransport()
         t.delay = 3

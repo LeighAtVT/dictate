@@ -139,12 +139,19 @@ public final class Pipeline {
         let style = router().style(for: target)
 
         // Check edits up front, and read the selection before the user has a chance to move on.
+        // A refused edit is still transcribed below and kept in history, so no words are lost.
         var selected = ""
+        var refusal: String?
         if mode == .edit {
-            guard hasKey() else { return done(.skipped(Notice.editNeedsKey), notice: Notice.editNeedsKey) }
-            guard style != .off else { return done(.skipped(Notice.polishOff), notice: Notice.polishOff) }
-            guard let text = await selection?.selectedText() else { return done(.skipped(Notice.highlightFirst), notice: Notice.highlightFirst) }
-            selected = text
+            if !hasKey() {
+                refusal = Notice.editNeedsKey
+            } else if style == .off {
+                refusal = Notice.polishOff
+            } else if let text = await selection?.selectedText() {
+                selected = text
+            } else {
+                refusal = Notice.highlightFirst
+            }
         }
 
         let vocab = vocabulary()
@@ -175,7 +182,12 @@ public final class Pipeline {
             }
 
         case .edit:
+            if let refusal {
+                history.add(HistoryEntry(date: Date(), bundleID: target.bundleID, raw: raw, final: cleaned))
+                return done(.skipped(refusal), notice: refusal)
+            }
             guard let rewritten = await polisher.edit(selected, instruction: cleaned, vocabulary: vocab) else {
+                history.add(HistoryEntry(date: Date(), bundleID: target.bundleID, raw: raw, final: cleaned))
                 return done(.failed("edit"), notice: Notice.editFailed)
             }
             return await deliver(rewritten, raw: raw, target: target, notice: nil, timings: (transcribeTime, clock))

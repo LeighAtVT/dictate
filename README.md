@@ -60,6 +60,18 @@ In password fields Dictate doesn't record. If no text box is focused, the text i
 - **Language:** what you speak (or Auto-detect) and what to paste in. Translating needs an OpenRouter key.
 - **Apps:** choose the style for each app, or turn polish off for an app.
 
+The first note saved to `Dictate Notes.md` makes macOS ask whether Dictate can use your Documents folder.
+
+## Uninstall
+
+1. Click the menu-bar icon → **Quit**.
+2. In Terminal, stop Dictate starting at login:
+   ```sh
+   launchctl bootout gui/$(id -u)/com.leigh.dictate.keepalive
+   rm ~/Library/LaunchAgents/com.leigh.dictate.keepalive.plist
+   ```
+3. Drag **Dictate** from Applications to the Trash. To remove its settings, history and speech model too, delete `~/Library/Application Support/Dictate`.
+
 ## Build from source
 
 You only need Apple's Command Line Tools (`xcode-select --install`); full Xcode isn't required.

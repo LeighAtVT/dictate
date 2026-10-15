@@ -33,4 +33,11 @@ import Testing
         tracker.begin(flags: 0x800000) // next recording starts fresh
         #expect(tracker.mode == .dictate)
     }
+
+    @Test func modifiersOnlyCountWhileTheKeyIsHeld() {
+        var tracker = ModeTracker(hotkey: .fn)
+        tracker.begin(flags: 0x800000)
+        #expect(tracker.update(flags: 0x02) == nil) // hands-free, Fn released: typing a capital letter
+        #expect(tracker.mode == .dictate)
+    }
 }

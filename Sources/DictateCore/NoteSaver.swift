@@ -65,13 +65,21 @@ public struct NoteSaver: NoteSaving {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = "yyyy-MM-dd HH:mm"
-        let line = Data("- [ ] \(f.string(from: now())) — \(text)\n".utf8)
+        // One checklist item per note, even when the note has paragraphs.
+        let oneLine = text.split(whereSeparator: \.isNewline).joined(separator: " ")
+        let line = "- [ ] \(f.string(from: now())) — \(oneLine)\n"
         let fm = FileManager.default
         if !fm.fileExists(atPath: fileURL.path) {
-            return (try? line.write(to: fileURL, options: .atomic)) != nil
+            return (try? Data(line.utf8).write(to: fileURL, options: .atomic)) != nil
         }
-        guard let handle = try? FileHandle(forWritingTo: fileURL) else { return false }
+        guard let handle = try? FileHandle(forUpdating: fileURL) else { return false }
         defer { try? handle.close() }
-        return (try? handle.seekToEnd()) != nil && (try? handle.write(contentsOf: line)) != nil
+        guard let end = try? handle.seekToEnd() else { return false }
+        var needsBreak = false
+        if end > 0, (try? handle.seek(toOffset: end - 1)) != nil, let last = try? handle.read(upToCount: 1) {
+            needsBreak = last != Data("\n".utf8)
+        }
+        guard (try? handle.seekToEnd()) != nil else { return false }
+        return (try? handle.write(contentsOf: Data(((needsBreak ? "\n" : "") + line).utf8))) != nil
     }
 }

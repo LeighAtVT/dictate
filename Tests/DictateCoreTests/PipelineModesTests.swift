@@ -84,12 +84,14 @@ final class FakeNotes: NoteSaving, @unchecked Sendable {
         #expect(outcome == .skipped(Pipeline.Notice.highlightFirst))
         #expect(notices == [Pipeline.Notice.highlightFirst])
         #expect(inserter.inserted.isEmpty)
+        #expect(history.recent().first?.raw == "um ship it today") // what was said is kept
     }
 
     @Test func editNeedsAKey() async {
         let (outcome, _) = await run(pipeline(hasKey: false), .edit)
         #expect(outcome == .skipped(Pipeline.Notice.editNeedsKey))
         #expect(selection.reads == 0)
+        #expect(history.recent().first?.raw == "um ship it today")
     }
 
     @Test func editRespectsPolishOff() async {
@@ -110,6 +112,7 @@ final class FakeNotes: NoteSaving, @unchecked Sendable {
         #expect(outcome == .failed("edit"))
         #expect(notices == [Pipeline.Notice.editFailed])
         #expect(inserter.inserted.isEmpty && inserter.copied.isEmpty)
+        #expect(history.recent().first?.raw == "um ship it today")
     }
 
     @Test func editCopiesWhenFocusMoved() async {

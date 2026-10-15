@@ -39,7 +39,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             history: history, vocabulary: { [unowned self] in settings.vocabulary },
                             transcriberReady: { [transcriber] in transcriber.isLoaded },
                             shortcuts: { [unowned self] in settings.shortcuts },
-                            selection: SelectionReader(axSelectedText: { context.selectedText() }, pasteboard: SystemPasteboard(), keys: CGEventKeySender()),
+                            selection: SelectionReader(probe: { context.selection() }, pasteboard: SystemPasteboard(), keys: CGEventKeySender()),
                             notes: NoteSaver(transport: URLSessionTransport(), token: { NoteSaver.defaultToken() },
                                              fileURL: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Documents/Dictate Notes.md")),
                             hasKey: { [unowned self] in settings.hasKey },
@@ -67,11 +67,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Queued behind the begin action, so the pill is already showing.
             Task { @MainActor in
                 guard let self, self.pipeline.isListening else { return }
-                switch mode {
-                case .edit: self.pill.show("Editing selection…", listening: true)
-                case .note: self.pill.show("Note to self…", listening: true)
-                case .dictate: break
-                }
+                self.mode = mode
+                if let label = self.modeLabel { self.pill.show(label, listening: true) }
             }
         }
 
@@ -90,6 +87,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private var settingsObserver: Any?
+    private var mode = DictationMode.dictate
+    private var modeLabel: String? {
+        switch mode {
+        case .edit: "Editing selection…"
+        case .note: "Note to self…"
+        case .dictate: nil
+        }
+    }
     private var hotkeyObserver: Any?
 
     /// Opening Dictate again (Spotlight, Finder, Dock) shows its window: the menu-bar icon can be hidden behind the notch.
@@ -155,7 +160,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                 }
                 let loaded = try Transcriber(modelURL: store.modelURL)
-                transcriber.set(loaded)
+                // Quit during the load: free the model now, or ggml aborts at exit and launchd relaunches us.
+                guard transcriber.set(loaded) else { await loaded.close(); return }
                 await MainActor.run { [weak self] in
                     self?.statusItem.modelStatus = nil
                     self?.refreshIcon()
@@ -195,10 +201,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func render(_ state: PipelineState) {
         switch state {
         case .listening:
+            mode = .dictate
             statusItem.set(.listening)
             pill.show("Listening…", listening: true)
         case .locked:
-            pill.show("Listening — tap \(settings.hotkey.shortName) to finish, Esc to cancel", listening: true)
+            let finish = "tap \(settings.hotkey.shortName) to finish, Esc to cancel"
+            pill.show(modeLabel.map { "\($0) \(finish)" } ?? "Listening — \(finish)", listening: true)
         case .working:
             statusItem.set(.working)
             pill.show("Working…", listening: false)

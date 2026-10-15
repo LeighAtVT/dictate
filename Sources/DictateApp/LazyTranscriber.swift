@@ -5,9 +5,15 @@ import Foundation
 final class LazyTranscriber: Transcribing, @unchecked Sendable {
     private let lock = NSLock()
     private var loaded: Transcriber?
+    private var closed = false
 
-    func set(_ transcriber: Transcriber) {
-        lock.withLock { loaded = transcriber }
+    /// Returns false once closed (the app is quitting); the caller must close `transcriber` itself.
+    func set(_ transcriber: Transcriber) -> Bool {
+        lock.withLock {
+            if closed { return false }
+            loaded = transcriber
+            return true
+        }
     }
 
     var isLoaded: Bool { lock.withLock { loaded != nil } }
@@ -19,7 +25,7 @@ final class LazyTranscriber: Transcribing, @unchecked Sendable {
     }
 
     func close() async {
-        let t: Transcriber? = lock.withLock { defer { loaded = nil }; return loaded }
+        let t: Transcriber? = lock.withLock { defer { loaded = nil; closed = true }; return loaded }
         await t?.close()
     }
 }
