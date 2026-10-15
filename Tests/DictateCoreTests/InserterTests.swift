@@ -17,12 +17,16 @@ final class FakePasteboard: Pasteboarding, @unchecked Sendable {
         onSet?()
     }
     var string: String? { items.first?["public.utf8-plain-text"].map { String(decoding: $0, as: UTF8.self) } }
+    func readString() -> String? { string }
 }
 
 final class FakeKeys: KeySending, @unchecked Sendable {
     var pastes = 0
     var onPaste: (() -> Void)?
+    var copies = 0
+    var onCopy: (() -> Void)?
     func sendCommandV() { pastes += 1; onPaste?() }
+    func sendCommandC() { copies += 1; onCopy?() }
 }
 
 @MainActor @Suite struct InserterTests {

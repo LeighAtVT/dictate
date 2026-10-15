@@ -8,17 +8,23 @@ struct SettingsView: View {
 
     @State private var keyInput = ""
     @State private var vocabText = ""
+    @State private var shortcutDrafts: [Shortcut] = []
 
     var body: some View {
         TabView {
             shortcut.tabItem { Label("Shortcut", systemImage: "keyboard") }
             polish.tabItem { Label("Polish", systemImage: "sparkles") }
             vocabulary.tabItem { Label("Vocabulary", systemImage: "text.book.closed") }
+            shortcuts.tabItem { Label("Shortcuts", systemImage: "text.bubble") }
+            language.tabItem { Label("Language", systemImage: "globe") }
             apps.tabItem { Label("Apps", systemImage: "app.badge") }
         }
         .padding(20)
-        .frame(width: 520, height: 420)
-        .onAppear { vocabText = settings.vocabulary.joined(separator: "\n") }
+        .frame(width: 600, height: 460)
+        .onAppear {
+            vocabText = settings.vocabulary.joined(separator: "\n")
+            shortcutDrafts = settings.shortcuts
+        }
     }
 
     private var shortcut: some View {
@@ -30,6 +36,13 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Hold \(settings.hotkey.shortName) to talk, let go to paste.")
                     Text("Double-tap \(settings.hotkey.shortName) to keep listening hands-free; tap once more to paste, or press Esc to cancel.")
+                }
+                .font(.callout)
+            }
+            Section("More with the same key") {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Highlight text, then hold \(settings.hotkey.shortName) + Shift and say how to change it (\"make this friendlier\", \"shorten it\").")
+                    Text("Hold \(settings.hotkey.shortName) + Control for a note to self: it goes to Yardmaster Tasks, or to Dictate Notes.md in Documents.")
                 }
                 .font(.callout)
             }
@@ -84,8 +97,57 @@ struct SettingsView: View {
         }
     }
 
+    private var shortcuts: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Say the phrase on its own and Dictate pastes the text exactly.").foregroundStyle(.secondary)
+            List {
+                ForEach($shortcutDrafts) { $shortcut in
+                    HStack(alignment: .top) {
+                        TextField("Phrase, e.g. my zoom link", text: $shortcut.phrase)
+                            .frame(width: 170)
+                        TextEditor(text: $shortcut.text)
+                            .font(.body)
+                            .frame(height: 54)
+                            .border(Color.secondary.opacity(0.3))
+                        Button(role: .destructive) {
+                            shortcutDrafts.removeAll { $0.id == shortcut.id }
+                        } label: { Image(systemName: "minus.circle") }
+                            .buttonStyle(.borderless)
+                    }
+                }
+            }
+            HStack {
+                Button("Add shortcut") { shortcutDrafts.append(Shortcut(phrase: "", text: "")) }
+                Spacer()
+                Button("Save shortcuts") {
+                    settings.shortcuts = shortcutDrafts.filter { !$0.phrase.trimmingCharacters(in: .whitespaces).isEmpty }
+                    shortcutDrafts = settings.shortcuts
+                }
+            }
+        }
+    }
+
+    private var language: some View {
+        Form {
+            Section {
+                Picker("I speak", selection: $settings.spokenLanguage) {
+                    Text("English").tag("en")
+                    Text("Auto-detect").tag("auto")
+                    ForEach(Language.all.filter { $0.code != "en" }) { Text($0.name).tag($0.code) }
+                }
+                Picker("Paste in", selection: $settings.pasteLanguage) {
+                    Text("Same as spoken").tag("same")
+                    ForEach(Language.all) { Text($0.name).tag($0.code) }
+                }
+            }
+            Text("Translating needs an OpenRouter key. Without one, Dictate pastes what you said.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .formStyle(.grouped)
+    }
+
     private var apps: some View {
-        let ids = Array(Set(knownApps()).union(settings.overrides.keys)).filter { !$0.isEmpty }.sorted()
+        let ids = Array(Set(knownApps()).union(settings.overrides.keys)).filter { !$0.isEmpty && $0 != "note" }.sorted()
         return VStack(alignment: .leading, spacing: 8) {
             Text("Choose how text is handled in each app. \"Off\" never sends text off your Mac.").foregroundStyle(.secondary)
             List(ids, id: \.self) { id in

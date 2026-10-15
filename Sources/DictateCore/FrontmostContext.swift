@@ -49,6 +49,23 @@ public final class FrontmostContext: ContextProviding {
                                         editable: Self.attribute(element, "AXEditable"), valueSettable: canSet, bundleID: bundleID)
     }
 
+    /// What the focused element says about its selection through Accessibility.
+    public func selection() -> SelectionProbe {
+        let system = AXUIElementCreateSystemWide()
+        AXUIElementSetMessagingTimeout(system, Self.axTimeout)
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(system, kAXFocusedUIElementAttribute as CFString, &value) == .success,
+              let focused = value, CFGetTypeID(focused) == AXUIElementGetTypeID() else { return .unknown }
+        let element = focused as! AXUIElement
+        if let text: String = Self.attribute(element, kAXSelectedTextAttribute), !text.isEmpty { return .text(text) }
+        var rangeValue: CFTypeRef?
+        var range = CFRange()
+        guard AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, &rangeValue) == .success,
+              let rangeValue, CFGetTypeID(rangeValue) == AXValueGetTypeID(),
+              AXValueGetValue(rangeValue as! AXValue, .cfRange, &range) else { return .unknown }
+        return range.length == 0 ? .empty : .unknown
+    }
+
     /// Paste unless the target is clearly not a text field. Many apps (Electron, web views) under-report
     /// their focus, and a stray ⌘V is harmless while a missed paste is not, so only Finder copies instead.
     static func looksLikeTextTarget(error: AXError, role: String?, editable: Bool?, valueSettable: Bool, bundleID: String) -> Bool {

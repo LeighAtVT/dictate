@@ -2,7 +2,6 @@ import AppKit
 import Combine
 import DictateCore
 import OSLog
-import ServiceManagement
 import SwiftUI
 
 @MainActor
@@ -23,8 +22,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var settingsWindow: NSWindow?
     private var onboardingWindow: NSWindow?
     private var permissionTimer: Timer?
+    private let events = EventLog(fileURL: FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Logs/Dictate/dictate.log"))
+    private var journal: RunJournal!
+    private var exitReason = "quit"
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        startJournal()
         settings = AppSettings(supportDirectory: supportDir)
         history = History(fileURL: supportDir.appendingPathComponent("history.json"))
         history.prune()
@@ -33,7 +37,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pipeline = Pipeline(recorder: AudioRecorder(), transcriber: transcriber, context: context,
                             router: { [unowned self] in settings.router }, polisher: makePolisher(), inserter: inserter,
                             history: history, vocabulary: { [unowned self] in settings.vocabulary },
-                            transcriberReady: { [transcriber] in transcriber.isLoaded })
+                            transcriberReady: { [transcriber] in transcriber.isLoaded },
+                            shortcuts: { [unowned self] in settings.shortcuts },
+                            selection: SelectionReader(probe: { context.selection() }, pasteboard: SystemPasteboard(), keys: CGEventKeySender()),
+                            notes: NoteSaver(transport: URLSessionTransport(), token: { NoteSaver.defaultToken() },
+                                             fileURL: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Documents/Dictate Notes.md")),
+                            hasKey: { [unowned self] in settings.hasKey },
+                            language: { [unowned self] in settings.language })
         pipeline.onStateChange = { [weak self] in self?.render($0) }
 
         statusItem = StatusItemController(history: history, actions: .init(
@@ -49,9 +59,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.hasKey = { [unowned self] in settings.hasKey }
         statusItem.permissionsOK = { Permissions.allGranted }
 
-        hotkey = HotkeyMonitor(hotkey: settings.hotkey) { [weak self] action in
+        hotkey = HotkeyMonitor(hotkey: settings.hotkey) { [weak self] action, mode in
             guard let self else { return }
-            Task { @MainActor in self.report(await self.pipeline.handle(action)) }
+            Task { @MainActor in self.report(await self.pipeline.handle(action, mode: mode)) }
+        }
+        hotkey.onModeChange = { [weak self] mode in
+            // Queued behind the begin action, so the pill is already showing.
+            Task { @MainActor in
+                guard let self, self.pipeline.isListening else { return }
+                self.mode = mode
+                if let label = self.modeLabel { self.pill.show(label, listening: true) }
+            }
         }
 
         // Rebuild the polisher when the model changes so the next dictation uses it.
@@ -64,12 +82,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.hotkey.hotkey = key
         }
 
-        try? SMAppService.mainApp.register()
         startPermissionWatch()
         loadModel()
     }
 
     private var settingsObserver: Any?
+    private var modelLoad: Task<Void, Never>?
+    private var mode = DictationMode.dictate
+    private var modeLabel: String? {
+        switch mode {
+        case .edit: "Editing selection…"
+        case .note: "Note to self…"
+        case .dictate: nil
+        }
+    }
     private var hotkeyObserver: Any?
 
     /// Opening Dictate again (Spotlight, Finder, Dock) shows its window: the menu-bar icon can be hidden behind the notch.
@@ -79,17 +105,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        journal.markClean(reason: exitReason)
+        record("terminate reason=\(exitReason)")
         // ggml aborts at exit if the Whisper context is still alive, so unload it first.
-        Task {
+        Task { [modelLoad] in
             await transcriber.close()
+            // A load still creating the model would leave a live context at exit; give it up to 5 s to
+            // finish (it then frees the model itself, since the transcriber is closed).
+            if let modelLoad {
+                await withTaskGroup(of: Void.self) { group in
+                    group.addTask { await modelLoad.value }
+                    group.addTask { try? await Task.sleep(for: .seconds(5)) }
+                    await group.next()
+                    group.cancelAll()
+                }
+            }
             NSApp.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater
     }
 
+    // MARK: Run journal
+
+    /// Notes each launch and exit so an unexpected stop shows up in ~/Library/Logs/Dictate/dictate.log.
+    private func startJournal() {
+        journal = RunJournal(fileURL: supportDir.appendingPathComponent("run.json"))
+        let agent = Instance.isAgentLaunch(environment: ProcessInfo.processInfo.environment)
+        record("launch pid=\(getpid()) agent=\(agent) accessibility=\(AXIsProcessTrusted())")
+        if let previous = journal.begin(pid: getpid(), now: Date()) {
+            record("previous run ended unexpectedly (pid=\(previous.pid) launched \(previous.launchedAt.ISO8601Format()))")
+            let reports = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/DiagnosticReports")
+            for report in RunJournal.crashReports(in: reports, since: previous.launchedAt) {
+                record("crash report: \(report.path)")
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+                self?.pill.show("Dictate restarted after an unexpected stop", listening: false, fadeAfter: 3)
+            }
+        }
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.willPowerOffNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.exitReason = "logout" }
+        }
+    }
+
+    private func record(_ message: String) {
+        events.write(message)
+        log.info("\(message, privacy: .public)")
+    }
+
     private func makePolisher() -> Polisher {
-        let keychain = settings.keychain
-        return Polisher(transport: URLSessionTransport(), apiKey: { keychain.read() }, model: settings.model)
+        let apiKey = settings.apiKey
+        return Polisher(transport: URLSessionTransport(), apiKey: { apiKey.value() }, model: settings.model)
     }
 
     // MARK: Model
@@ -98,7 +163,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let store = ModelStore(directory: supportDir.appendingPathComponent("models"), spec: .largeV3TurboQ5, downloader: URLSessionDownloader())
         statusItem.modelStatus = "Preparing speech model…"
         refreshIcon()
-        Task.detached { [transcriber] in
+        modelLoad = Task.detached { [transcriber] in
             do {
                 try await store.ensureModel { fraction in
                     Task { @MainActor [weak self] in
@@ -106,7 +171,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                 }
                 let loaded = try Transcriber(modelURL: store.modelURL)
-                transcriber.set(loaded)
+                // Quit during the load: free the model now, or ggml aborts at exit and launchd relaunches us.
+                guard transcriber.set(loaded) else { await loaded.close(); return }
                 await MainActor.run { [weak self] in
                     self?.statusItem.modelStatus = nil
                     self?.refreshIcon()
@@ -146,10 +212,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func render(_ state: PipelineState) {
         switch state {
         case .listening:
+            mode = .dictate
             statusItem.set(.listening)
             pill.show("Listening…", listening: true)
         case .locked:
-            pill.show("Listening — tap \(settings.hotkey.shortName) to finish, Esc to cancel", listening: true)
+            let finish = "tap \(settings.hotkey.shortName) to finish, Esc to cancel"
+            pill.show(modeLabel.map { "\($0) \(finish)" } ?? "Listening — \(finish)", listening: true)
         case .working:
             statusItem.set(.working)
             pill.show("Working…", listening: false)
@@ -166,7 +234,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let t = pipeline.lastTimings, case .inserted = outcome {
             log.info("dictation transcribe=\(t.transcribe, format: .fixed(precision: 2))s polish=\(t.polish, format: .fixed(precision: 2))s insert=\(t.insert, format: .fixed(precision: 2))s total=\(t.total, format: .fixed(precision: 2))s")
         }
-        if case .failed(let message) = outcome { log.error("dictation failed: \(message, privacy: .public)") }
+        if case .failed(let message) = outcome { record("dictation failed: \(message)") }
     }
 
     // MARK: Windows

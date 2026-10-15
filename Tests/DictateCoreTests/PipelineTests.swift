@@ -17,8 +17,10 @@ final class FakeTranscriber: Transcribing, @unchecked Sendable {
     var calls = 0
     var gate: CheckedContinuation<Void, Never>?
     var suspend = false
-    func transcribe(_ samples: [Float], vocabulary: [String]) async throws -> String {
+    var languages: [String] = []
+    func transcribe(_ samples: [Float], vocabulary: [String], language: String) async throws -> String {
         calls += 1
+        languages.append(language)
         if suspend { await withCheckedContinuation { gate = $0 } }
         if let error { throw error }
         return text
@@ -36,7 +38,15 @@ final class FakePolisher: Polishing, @unchecked Sendable {
     var reply: String?
     var styles: [Style] = []
     init(reply: String?) { self.reply = reply }
-    func polish(_ text: String, style: Style, vocabulary: [String]) async -> String? { styles.append(style); return reply }
+    var outputs: [OutputLanguage] = []
+    var editReply: String?
+    var edits: [(text: String, instruction: String)] = []
+    func polish(_ text: String, style: Style, vocabulary: [String], output: OutputLanguage) async -> String? {
+        styles.append(style); outputs.append(output); return reply
+    }
+    func edit(_ text: String, instruction: String, vocabulary: [String]) async -> String? {
+        edits.append((text, instruction)); return editReply
+    }
 }
 
 @MainActor final class FakeInserter: Inserting {

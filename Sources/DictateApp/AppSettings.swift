@@ -8,7 +8,11 @@ final class AppSettings: ObservableObject {
 
     private let defaults = UserDefaults.standard
     let keychain = KeychainStore()
+    /// Read once, off the main thread: after an update macOS may ask to allow Keychain access, and
+    /// Dictate must keep working (unpolished) while that prompt waits.
+    let apiKey: CachedSecret
     let vocabularyStore: Vocabulary
+    let shortcutStore: ShortcutStore
 
     @Published var model: String { didSet { defaults.set(model, forKey: "polishModel") } }
     @Published var overrides: [String: Style] {
@@ -16,6 +20,9 @@ final class AppSettings: ObservableObject {
     }
     @Published var hotkey: Hotkey { didSet { defaults.set(hotkey.rawValue, forKey: "hotkey") } }
     @Published var vocabulary: [String] { didSet { try? vocabularyStore.save(vocabulary) } }
+    @Published var shortcuts: [Shortcut] { didSet { try? shortcutStore.save(shortcuts) } }
+    @Published var spokenLanguage: String { didSet { defaults.set(spokenLanguage, forKey: "spokenLanguage") } }
+    @Published var pasteLanguage: String { didSet { defaults.set(pasteLanguage, forKey: "pasteLanguage") } }
     @Published private(set) var hasKey: Bool
 
     init(supportDirectory: URL) {
@@ -25,14 +32,28 @@ final class AppSettings: ObservableObject {
         overrides = raw.compactMapValues(Style.init(rawValue:))
         hotkey = defaults.string(forKey: "hotkey").flatMap(Hotkey.init(rawValue:)) ?? .default
         vocabulary = vocabularyStore.load()
-        hasKey = keychain.read() != nil
+        shortcutStore = ShortcutStore(fileURL: supportDirectory.appendingPathComponent("shortcuts.json"))
+        shortcuts = shortcutStore.load()
+        spokenLanguage = defaults.string(forKey: "spokenLanguage") ?? LanguageSettings.default.spoken
+        pasteLanguage = defaults.string(forKey: "pasteLanguage") ?? LanguageSettings.default.paste
+        let keychain = keychain
+        apiKey = CachedSecret { keychain.read() }
+        hasKey = false
+        Task.detached { [apiKey] in
+            let found = apiKey.value() != nil
+            await MainActor.run { [weak self] in self?.hasKey = found }
+        }
     }
 
     func saveKey(_ key: String) {
         let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty { try? keychain.delete() } else { try? keychain.write(trimmed) }
-        hasKey = keychain.read() != nil
+        do {
+            if trimmed.isEmpty { try keychain.delete() } else { try keychain.write(trimmed) }
+            apiKey.set(trimmed.isEmpty ? nil : trimmed)
+            hasKey = !trimmed.isEmpty
+        } catch {}
     }
 
     var router: StyleRouter { StyleRouter(overrides: overrides) }
+    var language: LanguageSettings { LanguageSettings(spoken: spokenLanguage, paste: pasteLanguage) }
 }

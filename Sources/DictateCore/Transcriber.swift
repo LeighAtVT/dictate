@@ -2,7 +2,14 @@ import Foundation
 import whisper
 
 public protocol Transcribing: Sendable {
-    func transcribe(_ samples: [Float], vocabulary: [String]) async throws -> String
+    /// `language` is a Whisper code ("en", "es", …) or "auto" to detect it. Whisper never translates here.
+    func transcribe(_ samples: [Float], vocabulary: [String], language: String) async throws -> String
+}
+
+extension Transcribing {
+    public func transcribe(_ samples: [Float], vocabulary: [String]) async throws -> String {
+        try await transcribe(samples, vocabulary: vocabulary, language: "en")
+    }
 }
 
 public struct TranscriberError: Error, CustomStringConvertible {
@@ -40,12 +47,12 @@ public actor Transcriber: Transcribing {
         ctx = nil
     }
 
-    public func transcribe(_ samples: [Float], vocabulary: [String]) async throws -> String {
+    public func transcribe(_ samples: [Float], vocabulary: [String], language: String) async throws -> String {
         guard ctx != nil else { throw TranscriberError(description: "Whisper model is not loaded") }
         let prompt = vocabulary.joined(separator: ", ")
         var parts: [String] = []
         for chunk in Self.chunks(samples) where SpeechGate.hasSpeech(chunk) {
-            let text = try run(chunk, prompt: prompt)
+            let text = try run(chunk, prompt: prompt, language: language)
             if !text.isEmpty { parts.append(text) }
         }
         return parts.joined(separator: " ")
@@ -59,7 +66,7 @@ public actor Transcriber: Transcribing {
         return stride(from: 0, to: samples.count, by: step).map { Array(samples[$0..<min($0 + size, samples.count)]) }
     }
 
-    private func run(_ samples: [Float], prompt: String) throws -> String {
+    private func run(_ samples: [Float], prompt: String, language: String) throws -> String {
         guard let ctx else { throw TranscriberError(description: "Whisper model is not loaded") }
         var params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY)
         params.no_timestamps = true
@@ -71,7 +78,7 @@ public actor Transcriber: Transcribing {
         params.suppress_nst = true // fewer "[BLANK_AUDIO]"-style tokens
         params.n_threads = Int32(max(1, min(8, ProcessInfo.processInfo.activeProcessorCount - 2)))
 
-        let status: Int32 = "en".withCString { lang in
+        let status: Int32 = language.withCString { lang in
             prompt.withCString { promptPtr in
                 params.language = lang
                 params.initial_prompt = prompt.isEmpty ? nil : promptPtr
