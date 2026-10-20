@@ -192,27 +192,37 @@ private struct ModelPicker: View {
             ForEach(presets) { Text($0.id == presets.first?.id ? "\($0.name) (recommended)" : $0.name).tag($0.id) }
             Text("Custom…").tag(Self.customTag)
         }
-        if custom {
+        if showingCustom {
             TextField("OpenRouter model ID, e.g. openai/gpt-6-sol", text: $customID)
-                .onSubmit { choice = ModelChoice(id: customID.trimmingCharacters(in: .whitespaces)) }
+                .onSubmit { useCustom() }
         }
         HStack(alignment: .firstTextBaseline) {
             Text(note).font(.caption).foregroundStyle(.secondary)
             Spacer()
-            Button(testing ? "Testing…" : "Test") { runTest() }.disabled(testing || choice.id.isEmpty)
+            Button(testing ? "Testing…" : "Test") { runTest() }.disabled(testing || target == nil)
         }
+        .onAppear { if preset == nil { customID = choice.id } }
         if let status { Text(status).font(.caption) }
     }
 
     private var preset: ModelPreset? { ModelCatalog.preset(for: choice, in: presets) }
+    private var showingCustom: Bool { custom || preset == nil }
+    private var trimmedCustomID: String { customID.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    /// What Test would check: the typed ID while editing a custom model, otherwise the current choice.
+    private var target: ModelChoice? {
+        guard showingCustom else { return choice }
+        return trimmedCustomID.isEmpty ? nil : ModelChoice(id: trimmedCustomID)
+    }
 
     private var note: String {
-        preset?.note ?? "Any model on openrouter.ai/models. Press Return to use it, then Test."
+        if showingCustom { return "Any model on openrouter.ai/models. Press Return to use it, then Test." }
+        return preset?.note ?? ""
     }
 
     private var selection: Binding<String> {
         Binding(
-            get: { custom || preset == nil ? Self.customTag : choice.id },
+            get: { showingCustom ? Self.customTag : choice.id },
             set: { tag in
                 status = nil
                 if let picked = presets.first(where: { $0.id == tag }) {
@@ -226,9 +236,14 @@ private struct ModelPicker: View {
         )
     }
 
+    private func useCustom() {
+        guard !trimmedCustomID.isEmpty else { return }
+        choice = ModelChoice(id: trimmedCustomID)
+    }
+
     private func runTest() {
-        if custom { choice = ModelChoice(id: customID.trimmingCharacters(in: .whitespaces)) }
-        let target = choice
+        guard let target else { return }
+        if showingCustom { useCustom() }
         testing = true
         status = nil
         Task {
