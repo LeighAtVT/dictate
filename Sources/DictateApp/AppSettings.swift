@@ -40,6 +40,10 @@ final class AppSettings: ObservableObject {
         let keychain = keychain
         apiKey = CachedSecret { keychain.read() }
         hasKey = false
+        // Assignments in init skip didSet, so write migrated or default models now; a later catalog
+        // reorder then can't silently switch anyone's model.
+        if defaults.data(forKey: "cleanupModel") == nil { save(model, forKey: "cleanupModel") }
+        if defaults.data(forKey: "editModel") == nil { save(editModel, forKey: "editModel") }
         Task.detached { [apiKey] in
             let found = apiKey.value() != nil
             await MainActor.run { [weak self] in self?.hasKey = found }

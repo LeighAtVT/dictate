@@ -194,7 +194,7 @@ private struct ModelPicker: View {
         }
         if showingCustom {
             TextField("OpenRouter model ID, e.g. openai/gpt-6-sol", text: $customID)
-                .onSubmit { useCustom() }
+                .onSubmit { runTest() }
         }
         HStack(alignment: .firstTextBaseline) {
             Text(note).font(.caption).foregroundStyle(.secondary)
@@ -216,7 +216,7 @@ private struct ModelPicker: View {
     }
 
     private var note: String {
-        if showingCustom { return "Any model on openrouter.ai/models. Press Return to use it, then Test." }
+        if showingCustom { return "Any model on openrouter.ai/models. Press Return or Test: it's used once it works." }
         return preset?.note ?? ""
     }
 
@@ -236,22 +236,19 @@ private struct ModelPicker: View {
         )
     }
 
-    private func useCustom() {
-        guard !trimmedCustomID.isEmpty else { return }
-        choice = ModelChoice(id: trimmedCustomID)
-    }
-
+    /// A typed model is only saved once it answers, so a typo never reaches dictation.
     private func runTest() {
-        guard let target else { return }
-        if showingCustom { useCustom() }
+        guard let target, !testing else { return }
         testing = true
         status = nil
         Task {
             let result = await test(target)
             testing = false
             switch result {
-            case .worked(let seconds): status = "✓ Worked in \(seconds.formatted(.number.precision(.fractionLength(1)))) s"
-            case .failed(let reason): status = "✗ \(reason)"
+            case .worked(let seconds):
+                if target != choice { choice = target }
+                status = "✓ Worked in \(seconds.formatted(.number.precision(.fractionLength(1)))) s"
+            case .failed(let reason): status = target == choice ? "✗ \(reason)" : "✗ \(reason) — not saved"
             }
         }
     }

@@ -19,9 +19,14 @@ public protocol Polishing: Sendable {
     func polish(_ text: String, style: Style, vocabulary: [String], output: OutputLanguage) async -> String?
     /// Rewrites `text` as the spoken `instruction` asks. Nil means leave the text alone.
     func edit(_ text: String, instruction: String, vocabulary: [String]) async -> String?
+    /// OpenRouter's reason for refusing the last request (bad model, no private providers, key, credits),
+    /// or nil once a request succeeds. Timeouts and server errors don't count: they fix themselves.
+    func lastConfigError() -> String?
 }
 
 extension Polishing {
+    public func lastConfigError() -> String? { nil }
+
     public func polish(_ text: String, style: Style, vocabulary: [String]) async -> String? {
         await polish(text, style: style, vocabulary: vocabulary, output: .same)
     }
@@ -40,6 +45,7 @@ public struct Polisher: Polishing {
     let timeout: TimeInterval
     let translateTimeout: TimeInterval
     let editTimeout: TimeInterval
+    private let refusal = Refusal()
 
     public init(transport: HTTPTransport, apiKey: @escaping @Sendable () -> String?, model: ModelChoice, editModel: ModelChoice? = nil,
                 timeout: TimeInterval = 2.5, translateTimeout: TimeInterval = 4, editTimeout: TimeInterval = 8) {
@@ -102,13 +108,23 @@ public struct Polisher: Polishing {
         }
     }
 
+    public func lastConfigError() -> String? { refusal.message }
+
     /// The reply's content, or nil on a missing key, timeout, network error, or non-2xx status.
     private func send(_ choice: ModelChoice, system: String, user: String, timeout: TimeInterval) async -> String? {
         guard let key = apiKey(), !key.isEmpty,
               let request = makeRequest(choice, system: system, user: user, key: key),
-              let (data, status) = await withDeadline(timeout, { try await transport.send(request, timeout: timeout) }),
-              (200..<300).contains(status) else { return nil }
-        return Self.content(from: data)
+              let (data, status) = await withDeadline(timeout, { try await transport.send(request, timeout: timeout) }) else { return nil }
+        switch status {
+        case 200..<300:
+            refusal.message = nil
+            return Self.content(from: data)
+        case 400..<500:
+            refusal.message = Self.errorMessage(from: data) ?? "OpenRouter returned \(status)."
+            return nil
+        default:
+            return nil
+        }
     }
 
     private func makeRequest(_ choice: ModelChoice, system: String, user: String, key: String) -> URLRequest? {
@@ -221,6 +237,17 @@ func withDeadline<T: Sendable>(_ seconds: TimeInterval, _ work: @escaping @Senda
     }
     tasks.forEach { $0.cancel() }
     return result
+}
+
+/// The last refusal, shared by copies of a Polisher and read from any thread.
+final class Refusal: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: String?
+
+    var message: String? {
+        get { lock.lock(); defer { lock.unlock() }; return stored }
+        set { lock.lock(); stored = newValue; lock.unlock() }
+    }
 }
 
 /// A flag that exactly one caller can claim.

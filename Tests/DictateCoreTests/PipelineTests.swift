@@ -41,6 +41,8 @@ final class FakePolisher: Polishing, @unchecked Sendable {
     var outputs: [OutputLanguage] = []
     var editReply: String?
     var edits: [(text: String, instruction: String)] = []
+    var configError: String?
+    func lastConfigError() -> String? { configError }
     func polish(_ text: String, style: Style, vocabulary: [String], output: OutputLanguage) async -> String? {
         styles.append(style); outputs.append(output); return reply
     }
