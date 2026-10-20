@@ -34,16 +34,19 @@ public struct Polisher: Polishing {
 
     let transport: HTTPTransport
     let apiKey: @Sendable () -> String?
-    let model: String
+    /// Cleanup and translation.
+    let model: ModelChoice
+    let editModel: ModelChoice
     let timeout: TimeInterval
     let translateTimeout: TimeInterval
     let editTimeout: TimeInterval
 
-    public init(transport: HTTPTransport, apiKey: @escaping @Sendable () -> String?, model: String, timeout: TimeInterval = 2.5,
-                translateTimeout: TimeInterval = 4, editTimeout: TimeInterval = 8) {
+    public init(transport: HTTPTransport, apiKey: @escaping @Sendable () -> String?, model: ModelChoice, editModel: ModelChoice? = nil,
+                timeout: TimeInterval = 2.5, translateTimeout: TimeInterval = 4, editTimeout: TimeInterval = 8) {
         self.transport = transport
         self.apiKey = apiKey
         self.model = model
+        self.editModel = editModel ?? model
         self.timeout = timeout
         self.translateTimeout = translateTimeout
         self.editTimeout = editTimeout
@@ -54,7 +57,7 @@ public struct Polisher: Polishing {
         // Raw apps get no cleanup, but still get the translation they asked for. Off never sends text.
         guard style != .off, style != .raw || translating else { return nil }
         let prompt = Self.systemPrompt(style: style, vocabulary: vocabulary, output: output)
-        guard let result = await send(system: prompt, user: text, timeout: translating ? translateTimeout : timeout),
+        guard let result = await send(model, system: prompt, user: text, timeout: translating ? translateTimeout : timeout),
               case let cleaned = Self.sanitize(result, input: text), !cleaned.isEmpty else { return nil }
         // Word counts don't carry across languages, so the length check only guards same-language cleanup.
         if !translating {
@@ -66,29 +69,60 @@ public struct Polisher: Polishing {
 
     public func edit(_ text: String, instruction: String, vocabulary: [String]) async -> String? {
         let user = "Instruction: \(instruction)\n\nText:\n\(text)"
-        guard let result = await send(system: Self.editPrompt(vocabulary: vocabulary), user: user, timeout: editTimeout) else { return nil }
+        guard let result = await send(editModel, system: Self.editPrompt(vocabulary: vocabulary), user: user, timeout: editTimeout) else { return nil }
         let cleaned = Self.sanitize(result, input: text)
         return cleaned.isEmpty ? nil : cleaned
     }
 
+    public enum CheckResult: Equatable, Sendable {
+        case worked(seconds: TimeInterval)
+        case failed(String)
+    }
+
+    /// Cleans one sample sentence with `choice`, for the Test button in Settings.
+    public func check(_ choice: ModelChoice, timeout: TimeInterval = 8) async -> CheckResult {
+        guard let key = apiKey(), !key.isEmpty else { return .failed("Add your OpenRouter key first.") }
+        guard let request = makeRequest(choice, system: Self.systemPrompt(style: .docs, vocabulary: []),
+                                        user: "um can you send me the link", key: key) else { return .failed("Couldn't build the request.") }
+        let start = Date()
+        let reply: Result<(Data, Int), Error>? = await withDeadline(timeout) {
+            do { return .success(try await transport.send(request, timeout: timeout)) } catch { return .failure(error) }
+        }
+        switch reply {
+        case nil:
+            return .failed("No reply within \(timeout.formatted()) seconds.")
+        case .failure(let error)?:
+            return .failed(error.localizedDescription)
+        case .success(let (data, status))?:
+            guard (200..<300).contains(status) else { return .failed(Self.errorMessage(from: data) ?? "OpenRouter returned \(status).") }
+            guard let content = Self.content(from: data), !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return .failed("The model sent back an empty reply.")
+            }
+            return .worked(seconds: Date().timeIntervalSince(start))
+        }
+    }
+
     /// The reply's content, or nil on a missing key, timeout, network error, or non-2xx status.
-    private func send(system: String, user: String, timeout: TimeInterval) async -> String? {
+    private func send(_ choice: ModelChoice, system: String, user: String, timeout: TimeInterval) async -> String? {
         guard let key = apiKey(), !key.isEmpty,
-              let request = makeRequest(system: system, user: user, key: key),
+              let request = makeRequest(choice, system: system, user: user, key: key),
               let (data, status) = await withDeadline(timeout, { try await transport.send(request, timeout: timeout) }),
               (200..<300).contains(status) else { return nil }
         return Self.content(from: data)
     }
 
-    private func makeRequest(system: String, user: String, key: String) -> URLRequest? {
-        let body: [String: Any] = [
-            "model": model,
+    private func makeRequest(_ choice: ModelChoice, system: String, user: String, key: String) -> URLRequest? {
+        var body: [String: Any] = [
+            "model": choice.id,
             "temperature": 0.2,
             "messages": [
                 ["role": "system", "content": system],
                 ["role": "user", "content": user],
             ],
+            // Only providers that keep nothing and don't train on prompts.
+            "provider": ["zdr": true, "data_collection": "deny"],
         ]
+        if let reasoning = choice.thinking.parameter { body["reasoning"] = reasoning }
         guard let json = try? JSONSerialization.data(withJSONObject: body) else { return nil }
         var req = URLRequest(url: Self.endpoint)
         req.httpMethod = "POST"
@@ -158,6 +192,12 @@ public struct Polisher: Polishing {
               let choices = json["choices"] as? [[String: Any]],
               let message = choices.first?["message"] as? [String: Any] else { return nil }
         return message["content"] as? String
+    }
+
+    static func errorMessage(from data: Data) -> String? {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let error = json["error"] as? [String: Any] else { return nil }
+        return error["message"] as? String
     }
 
     static func wordCount(_ s: String) -> Int {

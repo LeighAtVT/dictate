@@ -5,6 +5,7 @@ import SwiftUI
 struct SettingsView: View {
     @ObservedObject var settings: AppSettings
     let knownApps: () -> [String]
+    let testModel: (ModelChoice) async -> Polisher.CheckResult
 
     @State private var keyInput = ""
     @State private var vocabText = ""
@@ -77,10 +78,14 @@ struct SettingsView: View {
                     }
                 }
             }
-            Section("Model") {
-                TextField("OpenRouter model", text: $settings.model)
-                Text("Only the transcribed text is sent, never audio.").font(.caption).foregroundStyle(.secondary)
+            Section("Cleanup and translation") {
+                ModelPicker(presets: ModelCatalog.cleanup, choice: $settings.model, test: testModel)
             }
+            Section("Edit by voice") {
+                ModelPicker(presets: ModelCatalog.edit, choice: $settings.editModel, test: testModel)
+            }
+            Text("Only the transcribed text is sent, never audio, and only to servers that keep nothing.")
+                .font(.caption).foregroundStyle(.secondary)
         }
         .formStyle(.grouped)
     }
@@ -166,5 +171,73 @@ struct SettingsView: View {
 
     private func binding(for id: String) -> Binding<Style?> {
         Binding(get: { settings.overrides[id] }, set: { settings.overrides[id] = $0 })
+    }
+}
+
+/// A recommended OpenRouter model, or any model ID typed in by hand.
+private struct ModelPicker: View {
+    let presets: [ModelPreset]
+    @Binding var choice: ModelChoice
+    let test: (ModelChoice) async -> Polisher.CheckResult
+
+    @State private var customID = ""
+    @State private var custom = false
+    @State private var status: String?
+    @State private var testing = false
+
+    private static let customTag = "custom"
+
+    var body: some View {
+        Picker("Model", selection: selection) {
+            ForEach(presets) { Text($0.id == presets.first?.id ? "\($0.name) (recommended)" : $0.name).tag($0.id) }
+            Text("Custom…").tag(Self.customTag)
+        }
+        if custom {
+            TextField("OpenRouter model ID, e.g. openai/gpt-6-sol", text: $customID)
+                .onSubmit { choice = ModelChoice(id: customID.trimmingCharacters(in: .whitespaces)) }
+        }
+        HStack(alignment: .firstTextBaseline) {
+            Text(note).font(.caption).foregroundStyle(.secondary)
+            Spacer()
+            Button(testing ? "Testing…" : "Test") { runTest() }.disabled(testing || choice.id.isEmpty)
+        }
+        if let status { Text(status).font(.caption) }
+    }
+
+    private var preset: ModelPreset? { ModelCatalog.preset(for: choice, in: presets) }
+
+    private var note: String {
+        preset?.note ?? "Any model on openrouter.ai/models. Press Return to use it, then Test."
+    }
+
+    private var selection: Binding<String> {
+        Binding(
+            get: { custom || preset == nil ? Self.customTag : choice.id },
+            set: { tag in
+                status = nil
+                if let picked = presets.first(where: { $0.id == tag }) {
+                    custom = false
+                    choice = picked.choice
+                } else {
+                    custom = true
+                    customID = preset == nil ? choice.id : ""
+                }
+            }
+        )
+    }
+
+    private func runTest() {
+        if custom { choice = ModelChoice(id: customID.trimmingCharacters(in: .whitespaces)) }
+        let target = choice
+        testing = true
+        status = nil
+        Task {
+            let result = await test(target)
+            testing = false
+            switch result {
+            case .worked(let seconds): status = "✓ Worked in \(seconds.formatted(.number.precision(.fractionLength(1)))) s"
+            case .failed(let reason): status = "✗ \(reason)"
+            }
+        }
     }
 }

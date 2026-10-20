@@ -54,7 +54,7 @@ In password fields Dictate doesn't record. If no text box is focused, the text i
 ## Settings
 
 - **Shortcut:** choose the key (Fn, Right Option, Right Command, and others).
-- **Polish:** your OpenRouter key and model (default `anthropic/claude-haiku-5.5`).
+- **Polish:** your OpenRouter key, and a model for each job: **Cleanup and translation** (default GLM 5.3 Flash) and **Edit by voice** (default DeepSeek V4.1 Flash). Pick a recommended model or type any OpenRouter model ID, then click **Test**. Requests only go to providers that keep nothing.
 - **Vocabulary:** names and terms to spell exactly.
 - **Shortcuts:** phrases that paste saved text, such as links, addresses, or a sign-off.
 - **Language:** what you speak (or Auto-detect) and what to paste in. Translating needs an OpenRouter key.
@@ -86,5 +86,5 @@ scripts/build-app.sh           # build, sign, copy to /Applications, and launch
 ## Privacy
 
 - Audio is kept in memory only while you're talking and is never saved or sent anywhere.
-- With polish on, only the transcribed text is sent to OpenRouter and the model you picked.
+- With polish on, only the transcribed text is sent to OpenRouter and the model you picked, and only to providers with zero data retention that don't train on it.
 - History (your last 50 messages, deleted after 7 days) is stored only on your Mac in `~/Library/Application Support/Dictate/`.

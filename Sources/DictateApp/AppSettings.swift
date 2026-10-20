@@ -4,8 +4,6 @@ import Foundation
 /// User preferences that aren't secrets. The OpenRouter key lives in the Keychain, never here.
 @MainActor
 final class AppSettings: ObservableObject {
-    static let defaultModel = "anthropic/claude-haiku-5.5"
-
     private let defaults = UserDefaults.standard
     let keychain = KeychainStore()
     /// Read once, off the main thread: after an update macOS may ask to allow Keychain access, and
@@ -14,7 +12,9 @@ final class AppSettings: ObservableObject {
     let vocabularyStore: Vocabulary
     let shortcutStore: ShortcutStore
 
-    @Published var model: String { didSet { defaults.set(model, forKey: "polishModel") } }
+    /// Cleanup and translation.
+    @Published var model: ModelChoice { didSet { save(model, forKey: "cleanupModel") } }
+    @Published var editModel: ModelChoice { didSet { save(editModel, forKey: "editModel") } }
     @Published var overrides: [String: Style] {
         didSet { defaults.set(overrides.mapValues(\.rawValue), forKey: "styleOverrides") }
     }
@@ -27,7 +27,8 @@ final class AppSettings: ObservableObject {
 
     init(supportDirectory: URL) {
         vocabularyStore = Vocabulary(fileURL: supportDirectory.appendingPathComponent("vocabulary.txt"))
-        model = defaults.string(forKey: "polishModel") ?? Self.defaultModel
+        model = Self.load("cleanupModel", from: defaults) ?? ModelCatalog.migrate(legacy: defaults.string(forKey: "polishModel"))
+        editModel = Self.load("editModel", from: defaults) ?? ModelCatalog.defaultEdit
         let raw = defaults.dictionary(forKey: "styleOverrides") as? [String: String] ?? [:]
         overrides = raw.compactMapValues(Style.init(rawValue:))
         hotkey = defaults.string(forKey: "hotkey").flatMap(Hotkey.init(rawValue:)) ?? .default
@@ -52,6 +53,14 @@ final class AppSettings: ObservableObject {
             apiKey.set(trimmed.isEmpty ? nil : trimmed)
             hasKey = !trimmed.isEmpty
         } catch {}
+    }
+
+    private func save(_ choice: ModelChoice, forKey key: String) {
+        defaults.set(try? JSONEncoder().encode(choice), forKey: key)
+    }
+
+    private static func load(_ key: String, from defaults: UserDefaults) -> ModelChoice? {
+        defaults.data(forKey: key).flatMap { try? JSONDecoder().decode(ModelChoice.self, from: $0) }
     }
 
     var router: StyleRouter { StyleRouter(overrides: overrides) }
