@@ -29,8 +29,9 @@ let package = Package(
         ),
         .testTarget(
             name: "DictateEngineTests",
-            dependencies: ["EngineKit"],
-            path: "native/mac/Tests/DictateEngineTests"
+            dependencies: ["EngineKit", "DictateCore"],
+            path: "native/mac/Tests/DictateEngineTests",
+            resources: [.copy("Fixtures")]
         ),
     ]
 )

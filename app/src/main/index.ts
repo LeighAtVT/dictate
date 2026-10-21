@@ -18,8 +18,10 @@ function engineBinaryPath(): string {
 
 function spawnEngine(): void {
   const binPath = engineBinaryPath()
-  console.log(`spawning engine: ${binPath}`)
-  const child = spawn(binPath, [], { stdio: ['pipe', 'pipe', 'pipe'] })
+  const dataDir = join(app.getPath('home'), 'Library', 'Application Support', 'Dictate Preview')
+  const args = ['--data-dir', dataDir, '--keychain-service', 'com.leigh.dictate.preview']
+  console.log(`spawning engine: ${binPath} ${args.join(' ')}`)
+  const child = spawn(binPath, args, { stdio: ['pipe', 'pipe', 'pipe'] })
   engine = child
 
   let buffer = ''
