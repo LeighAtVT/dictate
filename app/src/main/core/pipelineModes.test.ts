@@ -206,6 +206,30 @@ describe('Pipeline modes', () => {
     expect(polisher.outputs).toEqual([{ kind: 'language', name: 'English' }])
   })
 
+  // Added for review round 2 (Minor 2): a history write failure before notes.save must not lose
+  // the note itself -- addHistory swallows write errors (matching v1's History.swift `try?`), so
+  // the note still gets saved and reported normally.
+  it('a history save failure still gives the normal note outcome', async () => {
+    const throwingHistory = { add: () => { throw new Error('disk full') } } as unknown as History
+    engine.setReply('context', slackContext)
+    const deps: PipelineDeps = {
+      engine,
+      polisher: () => polisher,
+      settings: () => ({ ...defaultSettings(), overrides: {}, spokenLanguage: 'en', pasteLanguage: 'same' }),
+      vocabulary: () => [],
+      shortcuts: () => [],
+      history: throwingHistory,
+      notes,
+      modelReady: () => true,
+      hasKey: () => true,
+      platform: 'mac'
+    }
+    const p = new Pipeline(deps)
+    const [outcome] = await run(p, 'note')
+    expect(outcome).toEqual({ type: 'noted', destination: 'tasks' })
+    expect(notes.saved).toEqual(['Polished.'])
+  })
+
   // MARK: Language
 
   // @Test transcribesInTheSpokenLanguage

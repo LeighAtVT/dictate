@@ -15,6 +15,17 @@
 // `shortcut` events are ignored; while a toggle recording is active, `key`
 // and `otherKey` events are ignored. `escape` always cancels whichever path
 // owns the recording.
+//
+// Review round 2 (ruling R11): a begin the pipeline drops (busy, or a finish
+// already queued -- see Pipeline.acceptsBegin) must not let the controller
+// think a recording started anyway. For the toggle path that would leave
+// `toggleMode` set forever, since only a matching `shortcut`/`escape` clears
+// it -- and while it's set, every `key`/`otherKey` event is thrown away
+// (:70/:79), so the hold-to-talk key would go dead with no sign why. For the
+// hold path, `holdActive`/`modes.begin`/`onModeChange` must likewise not
+// reflect a begin that never actually happened, but the state machine's own
+// transitions (not gated on this) still drive the matching release to a
+// harmless no-op once the dropped begin's `target` never got set.
 import type { EngineEvent, Modifier, ModeAction } from '../../shared/protocol'
 import { HotkeyStateMachine, type HotkeyAction, type HotkeyEvent } from './hotkeyStateMachine'
 import { ModeTracker, type DictationMode } from './modes'
@@ -24,6 +35,8 @@ export class HotkeyController {
   private readonly onAction: (action: HotkeyAction, mode: DictationMode) => void
   private readonly now: () => number
   private readonly schedule: (fn: () => void, ms: number) => unknown
+  /** Whether a beginRecording right now would actually be accepted (Pipeline.acceptsBegin). */
+  private readonly canBegin: () => boolean
 
   private machine = new HotkeyStateMachine()
   private modes: ModeTracker
@@ -41,12 +54,14 @@ export class HotkeyController {
     noteModifier: Modifier,
     onAction: (action: HotkeyAction, mode: DictationMode) => void,
     now: () => number = () => performance.now() / 1000,
-    schedule: (fn: () => void, ms: number) => unknown = setTimeout
+    schedule: (fn: () => void, ms: number) => unknown = setTimeout,
+    canBegin: () => boolean = () => true
   ) {
     this.noteModifier = noteModifier
     this.onAction = onAction
     this.now = now
     this.schedule = schedule
+    this.canBegin = canBegin
     this.modes = new ModeTracker(noteModifier)
   }
 
@@ -117,6 +132,11 @@ export class HotkeyController {
 
   private handleShortcut(action: ModeAction): void {
     if (this.toggleMode === null) {
+      // Review round 2 (R11): if the pipeline would just drop this begin, don't set toggleMode
+      // at all -- otherwise it stays set forever (only a matching shortcut/escape clears it),
+      // and every key/otherKey event gets thrown away in the meantime (:70/:79), killing the
+      // hold-to-talk key with no sign why.
+      if (!this.canBegin()) return
       this.toggleMode = action
       this.onAction('beginRecording', action)
     } else {
@@ -128,12 +148,18 @@ export class HotkeyController {
 
   private dispatch(event: HotkeyEvent, held: Modifier[] = []): void {
     const action = this.machine.handle(event)
-    if (action === 'beginRecording') {
+    // Review round 2 (R11): the hold path's own timing state machine isn't gated on canBegin
+    // (it has no notion of the pipeline), so a begin it reports still fires onAction -- the
+    // pipeline's own drop check (Pipeline.acceptsBegin's handle()-side twin) makes that a
+    // harmless no-op. But holdActive/modes.begin/onModeChange must not reflect a begin that
+    // never actually happened, or the matching release would read a stale mode.
+    const begins = action === 'beginRecording' && this.canBegin()
+    if (begins) {
       this.modes.begin(held) // modifiers already down count too
       this.holdActive = true
     }
     if (action !== 'none') this.onAction(action, this.modes.mode)
-    if (action === 'beginRecording' && this.modes.mode !== 'dictate') this.onModeChange?.(this.modes.mode)
+    if (begins && this.modes.mode !== 'dictate') this.onModeChange?.(this.modes.mode)
     if (action === 'finishRecording' || action === 'cancelRecording') this.holdActive = false
     if (this.machine.awaitingSecondTap) {
       this.schedule(() => this.dispatch({ t: 'timeout', at: this.now() }), HotkeyStateMachine.DOUBLE_TAP_WINDOW * 1000)

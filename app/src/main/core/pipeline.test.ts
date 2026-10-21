@@ -388,7 +388,9 @@ describe('Pipeline', () => {
     engine.setError('selection', new Error('boom'))
     const p = pipeline()
     const notices: string[] = []
+    const states: PipelineState[] = []
     p.onState = (s: PipelineState): void => {
+      states.push(s)
       if (s.type === 'notice') notices.push(s.message)
     }
     await p.handle('beginRecording')
@@ -396,6 +398,7 @@ describe('Pipeline', () => {
     expect(outcome).toEqual({ type: 'skipped', notice: Pipeline.Notice.highlightFirst })
     expect(notices).toEqual([Pipeline.Notice.highlightFirst])
     expect(engine.callsFor('stopRecording')).toHaveLength(1)
+    expect(states[states.length - 1]).toEqual({ type: 'idle' })
     expect(p.isListening).toBe(false)
     expect(p.isBusy).toBe(false)
 
@@ -409,7 +412,9 @@ describe('Pipeline', () => {
     engine.setError('paste', new Error('paste boom'))
     const p = pipeline()
     const notices: string[] = []
+    const states: PipelineState[] = []
     p.onState = (s: PipelineState): void => {
+      states.push(s)
       if (s.type === 'notice') notices.push(s.message)
     }
     const outcome = await dictate(p)
@@ -417,6 +422,7 @@ describe('Pipeline', () => {
     expect(engine.callsFor('paste')).toHaveLength(1)
     expect(engine.callsFor('copy')).toHaveLength(1)
     expect(notices).toEqual([Pipeline.Notice.copied('mac')])
+    expect(states[states.length - 1]).toEqual({ type: 'idle' })
 
     engine.clearError('paste')
     expect(await dictate(p)).toEqual({ type: 'inserted', text: 'Polished.' })
@@ -453,13 +459,16 @@ describe('Pipeline', () => {
     engine.setError('copy', new Error('copy boom'))
     const p = pipeline()
     const notices: string[] = []
+    const states: PipelineState[] = []
     p.onState = (s: PipelineState): void => {
+      states.push(s)
       if (s.type === 'notice') notices.push(s.message)
     }
     const outcome = await dictate(p)
     expect(outcome).toEqual({ type: 'failed', reason: 'copy boom' })
     expect(notices).toEqual([Pipeline.Notice.failed])
     expect(engine.callsFor('paste')).toHaveLength(0)
+    expect(states[states.length - 1]).toEqual({ type: 'idle' })
     expect(p.isListening).toBe(false)
     expect(p.isBusy).toBe(false)
 
@@ -476,7 +485,9 @@ describe('Pipeline', () => {
     engine.queueError('context', new Error('context boom')) // deliver()'s fresh lookup
     const p = pipeline()
     const notices: string[] = []
+    const states: PipelineState[] = []
     p.onState = (s: PipelineState): void => {
+      states.push(s)
       if (s.type === 'notice') notices.push(s.message)
     }
     const outcome = await dictate(p)
@@ -484,6 +495,7 @@ describe('Pipeline', () => {
     expect(notices).toEqual([Pipeline.Notice.failed])
     expect(engine.callsFor('paste')).toHaveLength(0)
     expect(engine.callsFor('copy')).toHaveLength(0)
+    expect(states[states.length - 1]).toEqual({ type: 'idle' })
     expect(p.isListening).toBe(false)
     expect(p.isBusy).toBe(false)
 
@@ -497,7 +509,9 @@ describe('Pipeline', () => {
     engine.setError('cancelRecording', new Error('cancel boom'))
     const p = pipeline()
     const notices: string[] = []
+    const states: PipelineState[] = []
     p.onState = (s: PipelineState): void => {
+      states.push(s)
       if (s.type === 'notice') notices.push(s.message)
     }
     await p.handle('beginRecording')
@@ -505,6 +519,7 @@ describe('Pipeline', () => {
     expect(outcome).toEqual({ type: 'failed', reason: 'cancel boom' })
     expect(notices).toEqual([Pipeline.Notice.failed])
     expect(engine.callsFor('cancelRecording')).toHaveLength(2) // the failed attempt, plus the catch-all's best-effort retry
+    expect(states[states.length - 1]).toEqual({ type: 'idle' })
     expect(p.isListening).toBe(false)
     expect(p.isBusy).toBe(false)
 
@@ -522,6 +537,52 @@ describe('Pipeline', () => {
     }
     expect(await dictate(p)).toEqual({ type: 'copied', text: 'Polished.' })
     expect(notices).toEqual(['Copied — press Ctrl+V'])
+  })
+
+  // Added for review round 2 (Minor 1): a throwing onState (e.g. a destroyed webContents) must
+  // not turn into a rejected `process`/unhandled rejection -- the catch-all's own done() call is
+  // guarded, and `handle`'s pendingFinishes bookkeeping `.catch()`s any rejection that still gets
+  // through regardless of where it came from.
+  it('a throwing onState does not reject the pipeline, and the next dictation works', async () => {
+    engine.setError('paste', new Error('paste boom'))
+    engine.setError('copy', new Error('copy boom'))
+    const p = pipeline()
+    // Throws only on the notice the catch-all tries to send once paste and copy both fail --
+    // 'listening'/'working' still need to go through untouched so the dictation actually reaches
+    // that point.
+    p.onState = (s: PipelineState): void => {
+      if (s.type === 'notice') throw new Error('webContents destroyed')
+    }
+    const outcome = await dictate(p)
+    expect(outcome).toEqual({ type: 'failed', reason: 'copy boom' })
+    expect(p.isListening).toBe(false)
+    expect(p.isBusy).toBe(false)
+
+    p.onState = undefined
+    engine.clearError('paste')
+    engine.clearError('copy')
+    expect(await dictate(p)).toEqual({ type: 'inserted', text: 'Polished.' })
+  })
+
+  // Added for review round 2 (Minor 2): a history write failure must not turn a successful paste
+  // into a reported `failed` outcome -- v1's History.swift swallows write errors with `try?`, and
+  // addHistory now does the same.
+  it('a history save failure still gives the normal pasted outcome', async () => {
+    const throwingHistory = { add: () => { throw new Error('disk full') } } as unknown as History
+    const deps: PipelineDeps = {
+      engine,
+      polisher: () => polisher,
+      settings: () => settings,
+      vocabulary: () => ['PostgreSQL'],
+      shortcuts: () => [],
+      history: throwingHistory,
+      notes,
+      modelReady: () => true,
+      hasKey: () => true,
+      platform: 'mac'
+    }
+    const p = new Pipeline(deps)
+    expect(await dictate(p)).toEqual({ type: 'inserted', text: 'Polished.' })
   })
 
   // Added by the task-10 brief, step 1: history is opt-in.

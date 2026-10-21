@@ -191,33 +191,59 @@ describe('HotkeyController', () => {
     ])
   })
 
-  // Added for review round 1 (ruling R9): Pipeline.handle now drops a beginRecording outright
-  // while busy (pendingFinishes), but HotkeyController's onAction is fire-and-forget -- its
-  // signature returns void, so the controller never inspects what the pipeline did with the
-  // action. holdActive/toggleMode are driven purely by the state machine's own transitions, so a
-  // begin the pipeline silently drops can't corrupt the matching finish or the next hold cycle.
-  it('consecutive hold-to-talk cycles stay independent of whatever the pipeline did with the previous one', () => {
+  // Added for review round 2 (ruling R11): a toggle-shortcut begin the pipeline drops (canBegin
+  // false, e.g. a previous dictation still Working) must not leave toggleMode set -- otherwise
+  // every key/otherKey event is thrown away (:70/:79) and the hold-to-talk key goes dead with no
+  // sign why, recoverable only by another shortcut tap or Escape. Replaces the round-1 test that
+  // covered this spot (it never actually dropped anything, so it couldn't have caught R11).
+  it('a dropped toggle-shortcut begin (canBegin false) does not wedge the hold-to-talk key', () => {
     const actions: Array<[HotkeyAction, DictationMode]> = []
+    let canBegin = false
     let t = 1.0
     const controller = new HotkeyController(
       'control',
       (a, m) => actions.push([a, m]),
       () => t,
-      () => 0
+      () => 0,
+      () => canBegin
     )
 
-    controller.onEvent({ event: 'key', down: true, held: [] }) // begin #1
+    controller.onEvent({ event: 'shortcut', action: 'note' }) // dropped: canBegin is false, toggleMode stays null
+    canBegin = true
+    controller.onEvent({ event: 'key', down: true, held: [] }) // begin hold
     t = 1.5
-    controller.onEvent({ event: 'key', down: false, held: [] }) // finish #1
-
-    t = 2.0
-    controller.onEvent({ event: 'key', down: true, held: [] }) // begin #2
-    t = 2.5
-    controller.onEvent({ event: 'key', down: false, held: [] }) // finish #2
+    controller.onEvent({ event: 'key', down: false, held: [] }) // finish hold
 
     expect(actions).toEqual([
       ['beginRecording', 'dictate'],
       ['finishRecording', 'dictate'],
+    ])
+  })
+
+  // Added for review round 2 (ruling R11): the hold path's state machine fires beginRecording
+  // regardless of canBegin (it has no notion of the pipeline), and the pipeline's own drop check
+  // makes that harmless -- but holdActive/modes.begin/onModeChange must not act as if a
+  // recording actually started, or a stray onModeChange would fire for a dictation that never
+  // began.
+  it('a hold while canBegin is false fires no onModeChange, even with a mode modifier already held', () => {
+    const actions: Array<[HotkeyAction, DictationMode]> = []
+    const modeChanges: DictationMode[] = []
+    let t = 1.0
+    const controller = new HotkeyController(
+      'control',
+      (a, m) => actions.push([a, m]),
+      () => t,
+      () => 0,
+      () => false
+    )
+    controller.onModeChange = (m) => modeChanges.push(m)
+
+    controller.onEvent({ event: 'key', down: true, held: ['shift'] }) // begin dropped by canBegin; shift would normally mean edit mode
+    t = 1.5
+    controller.onEvent({ event: 'key', down: false, held: [] }) // finish
+
+    expect(modeChanges).toEqual([])
+    expect(actions).toEqual([
       ['beginRecording', 'dictate'],
       ['finishRecording', 'dictate'],
     ])

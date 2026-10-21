@@ -97,6 +97,13 @@ export class Pipeline {
   private busy = false
   /** Counts finishRecording calls that have been queued but haven't settled yet (review R9). */
   private pendingFinishes = 0
+  /**
+   * True from a successful startRecording until the engine-side recording is actually stopped
+   * or cancelled (review R10, Minor 3). Tracked separately from `target`, which clears as soon
+   * as `finish` starts work so `isListening` flips to false right away -- `recordingLive` only
+   * answers "is there still something on the engine side worth a best-effort cancel."
+   */
+  private recordingLive = false
   private timings: StageTimings | null = null
 
   onState?: (s: PipelineState) => void
@@ -111,6 +118,15 @@ export class Pipeline {
 
   get isListening(): boolean {
     return this.target !== null
+  }
+
+  /**
+   * True when a `beginRecording` arriving right now would actually be accepted (decision 1 /
+   * ruling R9's drop rule in `handle`, mirrored here so callers -- e.g. HotkeyController's
+   * `canBegin` -- can check ahead of time instead of firing a begin they know will be dropped).
+   */
+  get acceptsBegin(): boolean {
+    return !this.busy && this.pendingFinishes === 0
   }
 
   get lastTimings(): StageTimings | null {
@@ -135,9 +151,13 @@ export class Pipeline {
     if (action === 'finishRecording') this.pendingFinishes++
     const result = this.chain.then(() => this.process(action, mode))
     if (action === 'finishRecording') {
+      // `.finally` re-throws whatever `result` rejected with (it shouldn't, after the catch-all
+      // below, but a throwing `onState` could still slip one through -- see Minor 1). `.catch`
+      // swallows that so it never surfaces as an unhandled rejection; the counter still comes
+      // back down either way.
       void result.finally(() => {
         this.pendingFinishes--
-      })
+      }).catch(() => {})
     }
     this.chain = result.then(
       () => undefined,
@@ -167,13 +187,14 @@ export class Pipeline {
       if (err instanceof RecordingLost) {
         this.target = null
         this.busy = false
-        return this.done({ type: 'failed', reason: 'recording lost' }, Pipeline.Notice.recordingLost)
+        this.recordingLive = false
+        return this.safeDone({ type: 'failed', reason: 'recording lost' }, Pipeline.Notice.recordingLost)
       }
       // Any other error (e.g. a plain engine failure that isn't EngineGone/EngineTimeout) must
       // still leave the pipeline idle and ready for the next dictation, not stuck mid-flow.
       // A recording may still be live underneath this error (e.g. cancelRecording itself
       // failed), so make a best-effort attempt to stop it; swallow any error from that too.
-      if (this.target !== null) {
+      if (this.recordingLive) {
         try {
           await this.deps.engine.request({ op: 'cancelRecording' })
         } catch {
@@ -182,10 +203,26 @@ export class Pipeline {
       }
       this.target = null
       this.busy = false
-      return this.done(
+      this.recordingLive = false
+      return this.safeDone(
         { type: 'failed', reason: err instanceof Error ? err.message : String(err) },
         Pipeline.Notice.failed
       )
+    }
+  }
+
+  /**
+   * `done`, but safe to call from error-recovery paths: `onState` is caller-supplied (e.g. a
+   * webContents.send that can throw if the window was destroyed mid-dictation), and this is the
+   * one `done` call that must never let that turn into an unhandled rejection in `process`
+   * (review Minor 1) -- the outcome itself is still returned even if the notice couldn't be
+   * delivered.
+   */
+  private safeDone(outcome: PipelineOutcome, notice: string | null): PipelineOutcome {
+    try {
+      return this.done(outcome, notice)
+    } catch {
+      return outcome
     }
   }
 
@@ -208,6 +245,7 @@ export class Pipeline {
       return { type: 'failed', reason: err instanceof Error ? err.message : String(err) }
     }
     this.target = ctx
+    this.recordingLive = true
     this.onState?.({ type: 'listening' })
     return null
   }
@@ -216,6 +254,7 @@ export class Pipeline {
     if (this.target === null) return null
     await this.engineCall(this.deps.engine.request({ op: 'cancelRecording' }))
     this.target = null
+    this.recordingLive = false
     this.onState?.({ type: 'idle' })
     return { type: 'cancelled' }
   }
@@ -267,6 +306,10 @@ export class Pipeline {
           { type: 'failed', reason: err instanceof Error ? err.message : String(err) },
           Pipeline.Notice.failed
         )
+      } finally {
+        // Whether stopRecording succeeded, threw a plain error, or threw RecordingLost, the
+        // engine-side recording is no longer live once this call has settled (review Minor 3).
+        this.recordingLive = false
       }
       if (stopResult.result === 'noSpeech') return this.done({ type: 'noSpeech' }, Pipeline.Notice.noSpeech)
 
@@ -377,7 +420,14 @@ export class Pipeline {
   }
 
   private addHistory(entry: HistoryEntry): void {
-    if (this.deps.settings().keepHistory) this.deps.history.add(entry)
+    if (!this.deps.settings().keepHistory) return
+    try {
+      this.deps.history.add(entry)
+    } catch {
+      // v1 swallows history write failures too (History.swift's `try?`): losing history is
+      // better than reporting a dictation that was actually pasted/noted as `failed` (review
+      // Minor 2).
+    }
   }
 
   private done(outcome: PipelineOutcome, notice: string | null): PipelineOutcome {
