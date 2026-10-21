@@ -121,4 +121,87 @@ describe('HotkeyController', () => {
       ['cancelRecording', 'dictate'],
     ])
   })
+
+  // Fix round 1: whichever path began the recording owns it until it ends.
+  it('a shortcut during a hold recording is ignored; key-up still finishes with the hold mode', () => {
+    const actions: Array<[HotkeyAction, DictationMode]> = []
+    let t = 1.0
+    const controller = new HotkeyController(
+      'control',
+      (a, m) => actions.push([a, m]),
+      () => t,
+      () => 0
+    )
+
+    controller.onEvent({ event: 'key', down: true, held: [] }) // begin hold
+    controller.onEvent({ event: 'shortcut', action: 'note' }) // ignored: hold owns the recording
+    t = 1.5
+    controller.onEvent({ event: 'key', down: false, held: [] }) // finish hold
+
+    expect(actions).toEqual([
+      ['beginRecording', 'dictate'],
+      ['finishRecording', 'dictate'],
+    ])
+  })
+
+  it('key down/up during a toggle recording is ignored; the next shortcut still finishes with the toggle mode', () => {
+    const actions: Array<[HotkeyAction, DictationMode]> = []
+    let t = 1.0
+    const controller = new HotkeyController(
+      'control',
+      (a, m) => actions.push([a, m]),
+      () => t,
+      () => 0
+    )
+
+    controller.onEvent({ event: 'shortcut', action: 'note' }) // begin toggle
+    controller.onEvent({ event: 'key', down: true, held: [] }) // ignored: toggle owns the recording
+    t = 1.5
+    controller.onEvent({ event: 'key', down: false, held: [] }) // ignored
+    controller.onEvent({ event: 'shortcut', action: 'dictate' }) // finish toggle
+
+    expect(actions).toEqual([
+      ['beginRecording', 'note'],
+      ['finishRecording', 'note'],
+    ])
+  })
+
+  it('a hold works normally after a toggle recording finishes', () => {
+    const actions: Array<[HotkeyAction, DictationMode]> = []
+    let t = 1.0
+    const controller = new HotkeyController(
+      'control',
+      (a, m) => actions.push([a, m]),
+      () => t,
+      () => 0
+    )
+
+    controller.onEvent({ event: 'shortcut', action: 'note' }) // begin toggle
+    controller.onEvent({ event: 'shortcut', action: 'dictate' }) // finish toggle
+
+    controller.onEvent({ event: 'key', down: true, held: [] }) // begin hold
+    t = 1.5
+    controller.onEvent({ event: 'key', down: false, held: [] }) // finish hold
+
+    expect(actions).toEqual([
+      ['beginRecording', 'note'],
+      ['finishRecording', 'note'],
+      ['beginRecording', 'dictate'],
+      ['finishRecording', 'dictate'],
+    ])
+  })
+
+  it('escape cancels a toggle recording; otherKey does not', () => {
+    const actions: Array<[HotkeyAction, DictationMode]> = []
+    const controller = new HotkeyController('control', (a, m) => actions.push([a, m]))
+
+    controller.onEvent({ event: 'shortcut', action: 'edit' }) // begin toggle
+    controller.onEvent({ event: 'otherKey' }) // ignored: doesn't cancel a toggle recording
+    controller.onEvent({ event: 'escape' }) // cancels the toggle recording
+
+    expect(actions).toEqual([
+      ['beginRecording', 'edit'],
+      ['cancelRecording', 'edit'],
+    ])
+  })
 })
