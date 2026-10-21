@@ -8,7 +8,10 @@
 // - Settings: v1's UserDefaults keys, read with `defaults export`, mapped the way v1's
 //   AppSettings.init reads them (Sources/DictateApp/AppSettings.swift).
 // - The key: read once from v1's Keychain item (`legacyKey`, one prompt) and saved in the
-//   preview's own item (`secret.set`). Whatever happens, it's asked only once.
+//   preview's own item (`secret.set`). The marker's `key` is 'pending' from the moment the files
+//   are in place until v1 answers (Ruling R33): 'imported', or 'none' (no key, or the prompt was
+//   denied), after which it's never asked again. An engine that goes away mid-prompt, or a failed
+//   save, leaves it 'pending', and the next launch retries only the key step.
 //
 // v1's folder and preferences are only ever read: nothing here writes inside `v1Dir`.
 // Never log or report the key.
@@ -42,16 +45,23 @@ export interface DataReport {
   settings: (keyof MappedSettings)[]
 }
 
+/** Where the key move stands; recorded as `key` in the marker. */
+export type KeyState = 'imported' | 'none' | 'pending'
+
 export type DataStep =
   | { status: 'alreadyMigrated' }
   | { status: 'failed'; error: string }
+  /** The files were copied earlier; only the key step is left. */
+  | { status: 'keyPending' }
   | { status: 'copied'; data: DataReport }
 
 export type MigrationReport =
   | { status: 'alreadyMigrated' }
   /** A file or settings step failed. No marker was written, so the next launch tries again. */
   | { status: 'failed'; error: string }
-  | ({ status: 'migrated'; keyImported: boolean } & DataReport)
+  | ({ status: 'migrated'; key: KeyState } & DataReport)
+  /** Only the key step ran, retrying an earlier 'pending'. */
+  | { status: 'keyRetried'; key: KeyState }
 
 export interface DataOptions {
   v1Dir: string
@@ -72,18 +82,26 @@ export interface MigrationOptions extends DataOptions {
  */
 export async function migrateFromV1(opts: MigrationOptions): Promise<MigrationReport> {
   const step = await copyV1Data(opts)
-  if (step.status !== 'copied') return step
-  return finishMigration(opts.dataDir, step.data, opts.engine)
+  if (step.status === 'alreadyMigrated' || step.status === 'failed') return step
+  const finished = await finishMigration(opts.dataDir, opts.engine)
+  if (finished.status === 'failed') return finished
+  return step.status === 'copied'
+    ? { status: 'migrated', key: finished.key, ...step.data }
+    : { status: 'keyRetried', key: finished.key }
 }
 
-/** Step 1: v1's files, model, and settings, unless the marker says this already ran. */
+/**
+ * Step 1: v1's files, model, and settings, then the marker with `key: 'pending'`. Skipped when
+ * the marker is already there: `keyPending` when only the key step is left.
+ */
 export async function copyV1Data(opts: DataOptions): Promise<DataStep> {
   const v1Dir = path.resolve(opts.v1Dir)
   const dataDir = path.resolve(opts.dataDir)
   if (dataDir === v1Dir || dataDir.startsWith(v1Dir + path.sep)) {
     return { status: 'failed', error: "the data folder is inside v1's folder" }
   }
-  if (fs.existsSync(path.join(dataDir, MARKER_FILE))) return { status: 'alreadyMigrated' }
+  const existing = readMarker(dataDir)
+  if (existing !== null) return existing['key'] === 'pending' ? { status: 'keyPending' } : { status: 'alreadyMigrated' }
   try {
     const defaults = await opts.readDefaults()
     const copied: string[] = []
@@ -100,38 +118,70 @@ export async function copyV1Data(opts: DataOptions): Promise<DataStep> {
       writeSettings(path.join(dataDir, 'settings.json'), mapped)
       settings = Object.keys(mapped) as (keyof MappedSettings)[]
     }
-    return { status: 'copied', data: { copied, model, settings } }
+    const data: DataReport = { copied, model, settings }
+    writeMarker(dataDir, { migratedAt: new Date().toISOString(), ...data, key: 'pending' })
+    return { status: 'copied', data }
   } catch (error) {
-    return { status: 'failed', error: error instanceof Error ? error.message : String(error) }
+    return { status: 'failed', error: message(error) }
   }
 }
 
 /**
- * Step 2: move the key once (`legacyKey` → `secret.set`), then write the marker. No key, a denied
- * prompt, or an engine that went away all leave `keyImported: false`, and the marker still goes
- * down, so there's never a second prompt: the user pastes the key in Settings → Polish instead.
+ * Step 2: move the key (`legacyKey` → `secret.set`) and record the result in the marker. Needs
+ * the marker from step 1.
  */
-export async function finishMigration(dataDir: string, data: DataReport, engine: EngineApi): Promise<MigrationReport> {
-  let keyImported = false
+export async function finishMigration(
+  dataDir: string,
+  engine: EngineApi
+): Promise<{ status: 'done'; key: KeyState } | { status: 'failed'; error: string }> {
+  const key = await importV1Key(engine)
   try {
-    const key = (await engine.request({ op: 'legacyKey' })).key?.trim() ?? ''
-    if (key.length > 0) {
-      await engine.request({ op: 'secret.set', value: key })
-      keyImported = true
-    }
-  } catch {
-    // keyImported stays false.
-  }
-  const report: MigrationReport = { status: 'migrated', keyImported, ...data }
-  try {
-    atomicWrite(
-      path.join(dataDir, MARKER_FILE),
-      JSON.stringify({ migratedAt: new Date().toISOString(), ...data, keyImported }, null, 2)
-    )
+    writeMarker(dataDir, { ...(readMarker(dataDir) ?? {}), key })
   } catch (error) {
-    return { status: 'failed', error: `couldn't write ${MARKER_FILE}: ${error instanceof Error ? error.message : String(error)}` }
+    return { status: 'failed', error: `couldn't write ${MARKER_FILE}: ${message(error)}` }
   }
-  return report
+  return { status: 'done', key }
+}
+
+/**
+ * The preview's own item first: a key already there (an earlier try that saved it, or one typed
+ * in Settings) needs no prompt. Then v1's item, once. Any error means the engine went away or the
+ * save failed, so it's 'pending' and retried; a null or blank reply is v1's answer, 'none'.
+ */
+async function importV1Key(engine: EngineApi): Promise<KeyState> {
+  try {
+    const own = (await engine.request({ op: 'secret.get' })).value?.trim() ?? ''
+    if (own.length > 0) return 'imported'
+    const key = (await engine.request({ op: 'legacyKey' })).key?.trim() ?? ''
+    if (key.length === 0) return 'none'
+    await engine.request({ op: 'secret.set', value: key })
+    return 'imported'
+  } catch {
+    return 'pending'
+  }
+}
+
+function readMarker(dataDir: string): Record<string, unknown> | null {
+  let text: string
+  try {
+    text = fs.readFileSync(path.join(dataDir, MARKER_FILE), 'utf8')
+  } catch {
+    return null
+  }
+  try {
+    const parsed: unknown = JSON.parse(text)
+    return isRecord(parsed) ? parsed : {}
+  } catch {
+    return {} // There, but unreadable: treat as done rather than copy over the preview's data again.
+  }
+}
+
+function writeMarker(dataDir: string, marker: Record<string, unknown>): void {
+  atomicWrite(path.join(dataDir, MARKER_FILE), JSON.stringify(marker, null, 2))
+}
+
+function message(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }
 
 function readIfPresent(file: string): string | null {
@@ -160,7 +210,8 @@ function linkModel(src: string, dest: string, link: (existing: string, newPath: 
   fs.mkdirSync(path.dirname(dest), { recursive: true })
   // Link or copy to a temporary name, then rename over the target, so a half-copied model never
   // sits under the real name (the engine would try to load it).
-  const tmp = `${dest}.${process.pid}.tmp`
+  // A fixed name, so a launch killed mid-copy leaves nothing behind that the next one won't reuse.
+  const tmp = `${dest}.migrating`
   fs.rmSync(tmp, { force: true })
   let result: ModelResult = 'linked'
   try {

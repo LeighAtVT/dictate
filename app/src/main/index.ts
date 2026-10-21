@@ -358,13 +358,16 @@ async function start(): Promise<void> {
   engine.start()
   engine.request({ op: 'setHotkey', key: settings.get().hotkey }).catch(() => {})
 
-  // The other half of the first launch: v1's key, once (one Keychain prompt), then the marker.
+  // The other half of the first launch: v1's key (one Keychain prompt), recorded in the marker.
+  // Also runs on a later launch when an earlier try was cut off ('pending', Ruling R33).
   if (migration.status === 'copied') {
     const { copied, model, settings: keys } = migration.data
     record(`migration: copied=${copied.join(',') || 'none'} model=${model} settings=${keys.length}`)
-    void finishMigration(dataDir, migration.data, engine).then((report) => {
-      if (report.status === 'failed') return record(`migration failed: ${report.error}`)
-      record(`migration: done keyImported=${report.status === 'migrated' && report.keyImported}`)
+  }
+  if (migration.status === 'copied' || migration.status === 'keyPending') {
+    void finishMigration(dataDir, engine).then((result) => {
+      if (result.status === 'failed') return record(`migration failed: ${result.error}`)
+      record(`migration: key=${result.key}`)
       void refreshKey()
     })
   }

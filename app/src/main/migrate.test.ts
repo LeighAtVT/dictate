@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { FakeEngine } from './core/pipelineFakes'
+import { FakeEngine, waitUntil } from './core/pipelineFakes'
 import { DEFAULT_CLEANUP, DEFAULT_EDIT } from './core/modelCatalog'
 import {
   MARKER_FILE,
@@ -85,14 +85,17 @@ function snapshot(dir: string): Record<string, string> {
   return out
 }
 
-function keyEngine(key: string | null = KEY): FakeEngine {
+function keyEngine(key: string | null = KEY, previewKey: string | null = null): FakeEngine {
   const engine = new FakeEngine()
+  engine.setReply('secret.get', { value: previewKey })
   engine.setReply('legacyKey', { key })
   engine.setReply('secret.set', {})
   return engine
 }
 
 const readDefaults = (d: Record<string, unknown> | null = v1Defaults()) => async () => d
+
+const marker = (): Record<string, unknown> => JSON.parse(fs.readFileSync(path.join(dataDir, MARKER_FILE), 'utf8'))
 
 const settingsFile = (): Record<string, unknown> =>
   JSON.parse(fs.readFileSync(path.join(dataDir, 'settings.json'), 'utf8'))
@@ -121,16 +124,36 @@ describe('migrateFromV1', () => {
       pasteLanguage: 'en'
     })
 
-    expect(engine.callsFor('legacyKey')).toHaveLength(1)
+    // The preview's own item first (no prompt), then v1's item once, then save it.
+    expect(engine.calls.map((c) => c.op)).toEqual(['secret.get', 'legacyKey', 'secret.set'])
     expect(engine.callsFor('secret.set')).toEqual([{ op: 'secret.set', value: KEY }])
     expect(report).toMatchObject({
       status: 'migrated',
       copied: ['vocabulary.txt', 'shortcuts.json', 'history.json'],
       model: 'linked',
-      keyImported: true
+      key: 'imported'
     })
-    const marker = JSON.parse(fs.readFileSync(path.join(dataDir, MARKER_FILE), 'utf8'))
-    expect(marker.keyImported).toBe(true)
+    expect(marker().key).toBe('imported')
+  })
+
+  it("writes the marker as key 'pending' once the files are in place, before the Keychain prompt", async () => {
+    const engine = keyEngine()
+    const release = engine.suspend('legacyKey')
+    const running = migrateFromV1({ v1Dir, dataDir, readDefaults: readDefaults(), engine })
+    await waitUntil(() => engine.callsFor('legacyKey').length === 1)
+    expect(marker().key).toBe('pending')
+    expect(fs.readFileSync(path.join(dataDir, 'history.json'), 'utf8')).toContain('v1 final')
+    release()
+    expect(await running).toMatchObject({ key: 'imported' })
+    expect(marker().key).toBe('imported')
+  })
+
+  it("doesn't prompt when the preview already has its own key", async () => {
+    const engine = keyEngine(KEY, 'sk-already-saved')
+    const report = await migrateFromV1({ v1Dir, dataDir, readDefaults: readDefaults(), engine })
+    expect(report).toMatchObject({ status: 'migrated', key: 'imported' })
+    expect(engine.calls.map((c) => c.op)).toEqual(['secret.get'])
+    expect(marker().key).toBe('imported')
   })
 
   it('does nothing on a second run', async () => {
@@ -198,6 +221,13 @@ describe('migrateFromV1', () => {
     expect(fs.statSync(path.join(dataDir, MODEL_FILE)).ino).toBe(fs.statSync(path.join(v1Dir, MODEL_FILE)).ino)
   })
 
+  it('leaves no temporary model file behind, even after an interrupted earlier try', async () => {
+    fs.mkdirSync(path.join(dataDir, 'models'), { recursive: true })
+    fs.writeFileSync(path.join(dataDir, `${MODEL_FILE}.migrating`), 'left by a killed launch')
+    await migrateFromV1({ v1Dir, dataDir, readDefaults: readDefaults(), engine: keyEngine() })
+    expect(fs.readdirSync(path.join(dataDir, 'models'))).toEqual(['ggml-large-v3-turbo-q5_0.bin'])
+  })
+
   it('skips the model when the destination is already the same file', async () => {
     fs.mkdirSync(path.join(dataDir, 'models'), { recursive: true })
     fs.linkSync(path.join(v1Dir, MODEL_FILE), path.join(dataDir, MODEL_FILE))
@@ -242,7 +272,7 @@ describe('migrateFromV1', () => {
   it('handles no v1 at all: no folder, no preferences', async () => {
     fs.rmSync(v1Dir, { recursive: true })
     const report = await migrateFromV1({ v1Dir, dataDir, readDefaults: readDefaults(null), engine: keyEngine(null) })
-    expect(report).toMatchObject({ status: 'migrated', copied: [], model: 'missing', settings: [], keyImported: false })
+    expect(report).toMatchObject({ status: 'migrated', copied: [], model: 'missing', settings: [], key: 'none' })
     expect(fs.existsSync(path.join(dataDir, 'settings.json'))).toBe(false)
     expect(fs.existsSync(path.join(dataDir, MARKER_FILE))).toBe(true)
   })
@@ -262,13 +292,13 @@ describe('migrateFromV1', () => {
     expect(engine.calls).toEqual([]) // no Keychain prompt for a migration that will run again
   })
 
-  it('still writes the marker when there is no v1 key, and never asks again', async () => {
+  it("marks key 'none' when v1 has no key (or the prompt was denied), and never asks again", async () => {
     const engine = keyEngine(null)
     const report = await migrateFromV1({ v1Dir, dataDir, readDefaults: readDefaults(), engine })
-    expect(report).toMatchObject({ status: 'migrated', keyImported: false })
+    expect(report).toMatchObject({ status: 'migrated', key: 'none' })
     expect(engine.callsFor('legacyKey')).toHaveLength(1)
     expect(engine.callsFor('secret.set')).toEqual([])
-    expect(JSON.parse(fs.readFileSync(path.join(dataDir, MARKER_FILE), 'utf8')).keyImported).toBe(false)
+    expect(marker().key).toBe('none')
 
     const again = keyEngine()
     await migrateFromV1({ v1Dir, dataDir, readDefaults: readDefaults(), engine: again })
@@ -278,24 +308,58 @@ describe('migrateFromV1', () => {
   it('treats a blank key like no key', async () => {
     const engine = keyEngine('   \n')
     const report = await migrateFromV1({ v1Dir, dataDir, readDefaults: readDefaults(), engine })
-    expect(report).toMatchObject({ keyImported: false })
+    expect(report).toMatchObject({ key: 'none' })
     expect(engine.callsFor('secret.set')).toEqual([])
   })
 
-  it('writes the marker with keyImported false when the Keychain read is denied or fails', async () => {
+  it("marks key 'pending' when the engine goes away during the prompt, and the next launch retries only the key", async () => {
     const engine = keyEngine()
     engine.setError('legacyKey', new Error('engine process exited before replying'))
     const report = await migrateFromV1({ v1Dir, dataDir, readDefaults: readDefaults(), engine })
-    expect(report).toMatchObject({ status: 'migrated', keyImported: false })
+    expect(report).toMatchObject({ status: 'migrated', key: 'pending' })
     expect(engine.callsFor('secret.set')).toEqual([])
-    expect(JSON.parse(fs.readFileSync(path.join(dataDir, MARKER_FILE), 'utf8')).keyImported).toBe(false)
+    expect(marker().key).toBe('pending')
+
+    // The preview's own use since; a key retry must not copy v1's files again.
+    fs.writeFileSync(path.join(dataDir, 'history.json'), '[]')
+    let defaultsRead = false
+    const again = keyEngine()
+    const retry = await migrateFromV1({
+      v1Dir,
+      dataDir,
+      readDefaults: async () => {
+        defaultsRead = true
+        return v1Defaults()
+      },
+      engine: again
+    })
+    expect(retry).toEqual({ status: 'keyRetried', key: 'imported' })
+    expect(again.calls.map((c) => c.op)).toEqual(['secret.get', 'legacyKey', 'secret.set'])
+    expect(defaultsRead).toBe(false)
+    expect(fs.readFileSync(path.join(dataDir, 'history.json'), 'utf8')).toBe('[]')
+    expect(marker()).toMatchObject({ key: 'imported', copied: ['vocabulary.txt', 'shortcuts.json', 'history.json'] })
+
+    // Done now: a third launch does nothing.
+    const third = keyEngine()
+    expect(await migrateFromV1({ v1Dir, dataDir, readDefaults: readDefaults(), engine: third })).toEqual({
+      status: 'alreadyMigrated'
+    })
+    expect(third.calls).toEqual([])
   })
 
-  it('reports keyImported false when saving the key fails', async () => {
+  it("marks key 'pending' when reading the preview's own item fails", async () => {
+    const engine = keyEngine()
+    engine.setError('secret.get', new Error('engine process exited before replying'))
+    expect(await migrateFromV1({ v1Dir, dataDir, readDefaults: readDefaults(), engine })).toMatchObject({ key: 'pending' })
+    expect(engine.callsFor('legacyKey')).toEqual([])
+  })
+
+  it("marks key 'pending' when saving the key fails", async () => {
     const engine = keyEngine()
     engine.setError('secret.set', new Error('keychain write failed'))
     const report = await migrateFromV1({ v1Dir, dataDir, readDefaults: readDefaults(), engine })
-    expect(report).toMatchObject({ status: 'migrated', keyImported: false })
+    expect(report).toMatchObject({ status: 'migrated', key: 'pending' })
+    expect(marker().key).toBe('pending')
   })
 
   it('never puts the key in the report or the marker', async () => {
@@ -319,11 +383,18 @@ describe('migrateFromV1', () => {
 })
 
 describe('copyV1Data', () => {
-  it("puts v1's files in place without touching the engine or writing the marker", async () => {
+  it("puts v1's files in place and marks the key step pending, without the engine", async () => {
     const step = await copyV1Data({ v1Dir, dataDir, readDefaults: readDefaults() })
     expect(step.status).toBe('copied')
     expect(fs.existsSync(path.join(dataDir, 'history.json'))).toBe(true)
-    expect(fs.existsSync(path.join(dataDir, MARKER_FILE))).toBe(false)
+    expect(marker().key).toBe('pending')
+  })
+
+  it("returns keyPending, copying nothing, when only the key step is left", async () => {
+    await copyV1Data({ v1Dir, dataDir, readDefaults: readDefaults() })
+    fs.writeFileSync(path.join(dataDir, 'history.json'), '[]')
+    expect(await copyV1Data({ v1Dir, dataDir, readDefaults: readDefaults() })).toEqual({ status: 'keyPending' })
+    expect(fs.readFileSync(path.join(dataDir, 'history.json'), 'utf8')).toBe('[]')
   })
 })
 
