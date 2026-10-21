@@ -3,11 +3,7 @@
 // in a capsule. main/pill.ts sends the text; this only draws it.
 import { useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-
-interface PillMessage {
-  text: string
-  listening: boolean
-}
+import type { PillMessage } from '../../shared/pill'
 
 declare global {
   interface Window {

@@ -4,6 +4,7 @@
 // when it fades is PillPresenter's job (pillPresenter.ts); this only draws and places it.
 import { BrowserWindow, screen } from 'electron'
 import { join } from 'node:path'
+import type { PillMessage } from '../shared/pill'
 import { pillBounds, type PillSurface } from './pillPresenter'
 
 /**
@@ -11,11 +12,6 @@ import { pillBounds, type PillSurface } from './pillPresenter'
  * sized to its text, and the rest of the window is transparent and ignores the mouse.
  */
 const SIZE = { width: 560, height: 44 }
-
-export interface PillMessage {
-  text: string
-  listening: boolean
-}
 
 export class PillWindow implements PillSurface {
   private readonly window: BrowserWindow
