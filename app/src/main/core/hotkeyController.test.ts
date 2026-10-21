@@ -191,6 +191,38 @@ describe('HotkeyController', () => {
     ])
   })
 
+  // Added for review round 1 (ruling R9): Pipeline.handle now drops a beginRecording outright
+  // while busy (pendingFinishes), but HotkeyController's onAction is fire-and-forget -- its
+  // signature returns void, so the controller never inspects what the pipeline did with the
+  // action. holdActive/toggleMode are driven purely by the state machine's own transitions, so a
+  // begin the pipeline silently drops can't corrupt the matching finish or the next hold cycle.
+  it('consecutive hold-to-talk cycles stay independent of whatever the pipeline did with the previous one', () => {
+    const actions: Array<[HotkeyAction, DictationMode]> = []
+    let t = 1.0
+    const controller = new HotkeyController(
+      'control',
+      (a, m) => actions.push([a, m]),
+      () => t,
+      () => 0
+    )
+
+    controller.onEvent({ event: 'key', down: true, held: [] }) // begin #1
+    t = 1.5
+    controller.onEvent({ event: 'key', down: false, held: [] }) // finish #1
+
+    t = 2.0
+    controller.onEvent({ event: 'key', down: true, held: [] }) // begin #2
+    t = 2.5
+    controller.onEvent({ event: 'key', down: false, held: [] }) // finish #2
+
+    expect(actions).toEqual([
+      ['beginRecording', 'dictate'],
+      ['finishRecording', 'dictate'],
+      ['beginRecording', 'dictate'],
+      ['finishRecording', 'dictate'],
+    ])
+  })
+
   it('escape cancels a toggle recording; otherKey does not', () => {
     const actions: Array<[HotkeyAction, DictationMode]> = []
     const controller = new HotkeyController('control', (a, m) => actions.push([a, m]))

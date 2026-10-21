@@ -3,7 +3,7 @@
 // PolishFailureTests.swift's PolisherConfigErrorTests suite. PolishFailureTests.swift's
 // second suite, PipelinePolishFailureTests, exercises Pipeline rather than Polisher and is
 // ported in pipeline.test.ts instead. stubFetch replaces StubTransport.
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { ModelChoice, Thinking } from './modelCatalog'
 import { Polisher } from './polisher'
 
@@ -117,17 +117,17 @@ describe('Polisher', () => {
   })
 
   // @Test nilOnTimeout
-  it(
-    'is null on timeout',
-    async () => {
+  it('is null on timeout', async () => {
+    vi.useFakeTimers()
+    try {
       const { fn } = stubFetch({ reply: 'Hello there.', delayMs: 3000 })
-      const start = Date.now()
-      const out = await polisher(fn).polish('hello there', 'slack', [])
-      expect(out).toBeNull()
-      expect(Date.now() - start).toBeLessThan(2800)
-    },
-    10_000
-  )
+      const result = polisher(fn).polish('hello there', 'slack', [])
+      await vi.advanceTimersByTimeAsync(2500)
+      expect(await result).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 
   // @Test nilOnTransportError
   it('is null on a transport error', async () => {
@@ -161,7 +161,7 @@ describe('Polisher', () => {
 
   // @Test keepsSpokenOkayWithTime
   it('keeps a spoken "okay" with a time in the text', async () => {
-    const reply = 'Okay, let’s meet at 3:30 tomorrow to review the GitHub backlog and Figma numbers.'
+    const reply = "Okay, let's meet at 3:30 tomorrow to review the GitHub backlog and Figma numbers."
     const { fn } = stubFetch({ reply })
     const out = await polisher(fn).polish(
       "okay let's meet at 3:30 tomorrow to review the github backlog and figma numbers",
@@ -245,17 +245,21 @@ describe('Polisher translation', () => {
   })
 
   // @Test translationUsesItsOwnTimeout
-  it(
-    'translation uses its own timeout',
-    async () => {
+  it('translation uses its own timeout', async () => {
+    vi.useFakeTimers()
+    try {
       const { fn } = stubFetch({ reply: 'Hello there.', delayMs: 3000 })
-      await expect(polisher(fn, { translateTimeoutMs: 4000 }).polish('hola', 'docs', [], { kind: 'language', name: 'English' })).resolves.toBe(
-        'Hello there.'
-      )
-      await expect(polisher(fn, { translateTimeoutMs: 1000 }).polish('hola', 'docs', [], { kind: 'language', name: 'English' })).resolves.toBeNull()
-    },
-    10_000
-  )
+      const longEnough = polisher(fn, { translateTimeoutMs: 4000 }).polish('hola', 'docs', [], { kind: 'language', name: 'English' })
+      await vi.advanceTimersByTimeAsync(3000)
+      await expect(longEnough).resolves.toBe('Hello there.')
+
+      const tooShort = polisher(fn, { translateTimeoutMs: 1000 }).polish('hola', 'docs', [], { kind: 'language', name: 'English' })
+      await vi.advanceTimersByTimeAsync(1000)
+      await expect(tooShort).resolves.toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
 
 describe('Polisher edit', () => {
@@ -299,15 +303,21 @@ describe('Polisher edit', () => {
   })
 
   // @Test usesEditTimeout
-  it(
-    'uses the edit timeout',
-    async () => {
+  it('uses the edit timeout', async () => {
+    vi.useFakeTimers()
+    try {
       const { fn } = stubFetch({ reply: 'Short.', delayMs: 3000 })
-      await expect(polisher(fn, { editTimeoutMs: 8000 }).edit(text, 'shorten', [])).resolves.toBe('Short.')
-      await expect(polisher(fn, { editTimeoutMs: 1000 }).edit(text, 'shorten', [])).resolves.toBeNull()
-    },
-    10_000
-  )
+      const longEnough = polisher(fn, { editTimeoutMs: 8000 }).edit(text, 'shorten', [])
+      await vi.advanceTimersByTimeAsync(3000)
+      await expect(longEnough).resolves.toBe('Short.')
+
+      const tooShort = polisher(fn, { editTimeoutMs: 1000 }).edit(text, 'shorten', [])
+      await vi.advanceTimersByTimeAsync(1000)
+      await expect(tooShort).resolves.toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
 
 describe('Polisher model routing', () => {
@@ -386,15 +396,17 @@ describe('Polisher model routing', () => {
   })
 
   // @Test checkReportsTimeout
-  it(
-    'check reports a timeout',
-    async () => {
+  it('check reports a timeout', async () => {
+    vi.useFakeTimers()
+    try {
       const { fn } = stubFetch({ reply: 'x', delayMs: 1000 })
-      const result = await new Polisher({ fetch: fn, apiKey: () => 'k', model: cleanup, timeoutMs: 200 }).check(cleanup, 200)
-      expect(result).toEqual({ failed: 'No reply within 0.2 seconds.' })
-    },
-    10_000
-  )
+      const result = new Polisher({ fetch: fn, apiKey: () => 'k', model: cleanup, timeoutMs: 200 }).check(cleanup, 200)
+      await vi.advanceTimersByTimeAsync(200)
+      expect(await result).toEqual({ failed: 'No reply within 0.2 seconds.' })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
 
 describe('Polisher config error (refusal)', () => {
@@ -424,20 +436,24 @@ describe('Polisher config error (refusal)', () => {
   })
 
   // @Test serverErrorsAndTimeoutsAreNotConfigErrors
-  it(
-    'server errors and timeouts are not config errors',
-    async () => {
-      const { fn, state } = stubFetch({ reply: 'x', status: 503 })
-      const p = polisher(fn, 200)
-      await p.polish('ship it today', 'slack', [])
-      expect(p.lastConfigError()).toBeNull()
+  it('server errors and timeouts are not config errors', async () => {
+    const { fn, state } = stubFetch({ reply: 'x', status: 503 })
+    const p = polisher(fn, 200)
+    await p.polish('ship it today', 'slack', [])
+    expect(p.lastConfigError()).toBeNull()
+
+    vi.useFakeTimers()
+    try {
       state.status = 200
       state.delayMs = 1000
-      await p.polish('ship it today', 'slack', [])
-      expect(p.lastConfigError()).toBeNull()
-    },
-    10_000
-  )
+      const result = p.polish('ship it today', 'slack', [])
+      await vi.advanceTimersByTimeAsync(200)
+      await result
+    } finally {
+      vi.useRealTimers()
+    }
+    expect(p.lastConfigError()).toBeNull()
+  })
 
   // @Test refusalWithoutBodyStillReported
   it('a refusal without a parseable body is still reported', async () => {

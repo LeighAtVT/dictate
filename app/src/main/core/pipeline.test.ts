@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { EngineGone } from '../engine'
 import { History } from './history'
 import { NoteSaver } from './noteSaver'
-import { FakeEngine, FakePolisher, slackContext, terminalContext, textStopReply, waitUntil } from './pipelineFakes'
+import { FakeEngine, FakePolisher, silenceStopReply, slackContext, terminalContext, textStopReply, waitUntil } from './pipelineFakes'
 import { Pipeline, type PipelineDeps, type PipelineOutcome, type PipelineState } from './pipeline'
 import { defaultSettings, type Settings } from './settingsStore'
 
@@ -35,7 +35,7 @@ describe('Pipeline', () => {
     fs.rmSync(dir, { recursive: true, force: true })
   })
 
-  function pipeline(opts: { ready?: boolean } = {}): Pipeline {
+  function pipeline(opts: { ready?: boolean; platform?: 'mac' | 'windows' } = {}): Pipeline {
     const deps: PipelineDeps = {
       engine,
       polisher: () => polisher,
@@ -46,7 +46,7 @@ describe('Pipeline', () => {
       notes,
       modelReady: () => opts.ready ?? true,
       hasKey: () => true,
-      platform: 'mac'
+      platform: opts.platform ?? 'mac'
     }
     return new Pipeline(deps)
   }
@@ -73,7 +73,7 @@ describe('Pipeline', () => {
 
   // @Test noSpeechPastesNothing
   it('pastes nothing when there is no speech', async () => {
-    engine.setReply('stopRecording', { result: 'noSpeech', seconds: 1 })
+    engine.setReply('stopRecording', silenceStopReply)
     expect(await dictate(pipeline())).toEqual({ type: 'noSpeech' })
     expect(engine.callsFor('paste')).toHaveLength(0)
   })
@@ -96,26 +96,76 @@ describe('Pipeline', () => {
     expect(engine.callsFor('stopRecording')).toHaveLength(0)
   })
 
-  // @Test ignoresPressWhilePipelineBusy, adapted for v2 decision 1 (one strict promise chain).
-  // In v1 a begin pressed while finish() is suspended is rejected synchronously by the busy
-  // check. In v2 every `handle` call is appended to one chain in arrival order, so the begin
-  // instead queues behind the in-flight finish and only runs once it completes (by which point
-  // busy has gone back to false) -- `isBusy` is still observably true while finish is suspended,
-  // and the queued begin starts a second, independent dictation rather than being dropped.
-  it('reports busy while finish is suspended, and queues a press that arrives during it', async () => {
+  // @Test ignoresPressWhilePipelineBusy. Review round 1 (ruling R9): v1's rule is that a press
+  // arriving while the pipeline is busy is dropped outright, not queued to run once busy goes
+  // back to false. `pendingFinishes` (see pipeline.ts's `handle`) restores that for v2's strict
+  // promise chain (decision 1): a beginRecording arriving while busy, or while a finishRecording
+  // is already queued ahead of it, resolves to null immediately instead of being appended.
+  it('ignores a press while the pipeline is busy', async () => {
     const release = engine.suspend('stopRecording')
     const p = pipeline()
     await p.handle('beginRecording')
     const finishing = p.handle('finishRecording')
     await waitUntil(() => engine.calledOps.has('stopRecording'))
     expect(p.isBusy).toBe(true)
-    const queuedBegin = p.handle('beginRecording')
+    expect(await p.handle('beginRecording')).toBeNull()
+    expect(engine.callsFor('startRecording')).toHaveLength(1)
+    release()
+    await finishing
+    expect(p.isBusy).toBe(false)
+  })
+
+  // Added for review round 1 (ruling R9): a finishRecording/cancelRecording that arrives right
+  // behind a dropped beginRecording must be a true no-op -- it still gets queued (only
+  // beginRecording is dropped outright), but there's no target to act on, so it does nothing.
+  it('a finishRecording or cancelRecording after a dropped beginRecording is a no-op', async () => {
+    const release = engine.suspend('stopRecording')
+    const p = pipeline()
+    const notices: string[] = []
+    p.onState = (s: PipelineState): void => {
+      if (s.type === 'notice') notices.push(s.message)
+    }
+    await p.handle('beginRecording')
+    const finishing = p.handle('finishRecording')
+    await waitUntil(() => engine.calledOps.has('stopRecording'))
+
+    expect(await p.handle('beginRecording')).toBeNull() // dropped: busy
+    const droppedFinish = p.handle('finishRecording')
+    const droppedCancel = p.handle('cancelRecording')
+
     release()
     expect(await finishing).toEqual({ type: 'inserted', text: 'Polished.' })
-    expect(p.isBusy).toBe(false)
-    expect(await queuedBegin).toBeNull() // began listening again; nothing to report
-    expect(engine.callsFor('startRecording')).toHaveLength(2)
-    expect(p.isListening).toBe(true)
+    expect(await droppedFinish).toBeNull()
+    expect(await droppedCancel).toBeNull()
+    expect(notices).toEqual([])
+    expect(engine.callsFor('startRecording')).toHaveLength(1)
+    expect(engine.callsFor('cancelRecording')).toHaveLength(0)
+    expect(p.isListening).toBe(false)
+  })
+
+  // Added for review round 1 (ruling R9): a hold-and-release that arrives while a previous
+  // dictation is still Working must not start a second recording or leave a stray "Didn't catch
+  // that" notice once the first dictation's paste lands.
+  it('a hold-and-release during Working produces no extra recording or stray notice', async () => {
+    const release = engine.suspend('stopRecording')
+    const p = pipeline()
+    const notices: string[] = []
+    p.onState = (s: PipelineState): void => {
+      if (s.type === 'notice') notices.push(s.message)
+    }
+    await p.handle('beginRecording')
+    const finishing = p.handle('finishRecording')
+    await waitUntil(() => engine.calledOps.has('stopRecording'))
+
+    const heldBegin = p.handle('beginRecording')
+    const heldFinish = p.handle('finishRecording')
+
+    release()
+    expect(await finishing).toEqual({ type: 'inserted', text: 'Polished.' })
+    expect(await heldBegin).toBeNull()
+    expect(await heldFinish).toBeNull()
+    expect(engine.callsFor('startRecording')).toHaveLength(1)
+    expect(notices).toEqual([])
   })
 
   // @Test copiesInsteadOfPastingWhenFrontAppChanged
@@ -290,6 +340,188 @@ describe('Pipeline', () => {
 
     engine.clearError('stopRecording')
     expect(await dictate(p)).toEqual({ type: 'inserted', text: 'Polished.' })
+  })
+
+  // Added for review round 1 (ruling R10): EngineGone during begin's own context() lookup is
+  // still "recording lost" (decision 5), and the pipeline recovers for the next dictation.
+  it("reports recording lost when the engine crashes during begin's context lookup, and recovers", async () => {
+    engine.setError('context', new EngineGone())
+    const p = pipeline()
+    const notices: string[] = []
+    p.onState = (s: PipelineState): void => {
+      if (s.type === 'notice') notices.push(s.message)
+    }
+    const outcome = await p.handle('beginRecording')
+    expect(outcome).toEqual({ type: 'failed', reason: 'recording lost' })
+    expect(notices).toEqual([Pipeline.Notice.recordingLost])
+    expect(engine.callsFor('startRecording')).toHaveLength(0)
+    expect(p.isListening).toBe(false)
+    expect(p.isBusy).toBe(false)
+
+    engine.clearError('context')
+    expect(await dictate(p)).toEqual({ type: 'inserted', text: 'Polished.' })
+  })
+
+  // Added for review round 1 (ruling R10): a crash during paste is still "recording lost", not
+  // a raw paste failure, and the pipeline recovers.
+  it('reports recording lost when the engine crashes during paste, and recovers', async () => {
+    engine.setError('paste', new EngineGone())
+    const p = pipeline()
+    const notices: string[] = []
+    p.onState = (s: PipelineState): void => {
+      if (s.type === 'notice') notices.push(s.message)
+    }
+    const outcome = await dictate(p)
+    expect(outcome).toEqual({ type: 'failed', reason: 'recording lost' })
+    expect(notices).toEqual([Pipeline.Notice.recordingLost])
+    expect(p.isListening).toBe(false)
+    expect(p.isBusy).toBe(false)
+
+    engine.clearError('paste')
+    expect(await dictate(p)).toEqual({ type: 'inserted', text: 'Polished.' })
+  })
+
+  // Added for review round 1 (ruling R10, Critical Fix 1): a plain engine failure on `selection`
+  // (not EngineGone/EngineTimeout) is treated like v1's nil selection result -- refuse the edit,
+  // but stopRecording still runs so the mic doesn't stay open, and the pipeline recovers.
+  it('treats a selection failure as a refusal, still runs stopRecording, and recovers', async () => {
+    engine.setError('selection', new Error('boom'))
+    const p = pipeline()
+    const notices: string[] = []
+    p.onState = (s: PipelineState): void => {
+      if (s.type === 'notice') notices.push(s.message)
+    }
+    await p.handle('beginRecording')
+    const outcome = await p.handle('finishRecording', 'edit')
+    expect(outcome).toEqual({ type: 'skipped', notice: Pipeline.Notice.highlightFirst })
+    expect(notices).toEqual([Pipeline.Notice.highlightFirst])
+    expect(engine.callsFor('stopRecording')).toHaveLength(1)
+    expect(p.isListening).toBe(false)
+    expect(p.isBusy).toBe(false)
+
+    engine.clearError('selection')
+    expect(await dictate(p)).toEqual({ type: 'inserted', text: 'Polished.' })
+  })
+
+  // Added for review round 1 (ruling R10, Critical Fix 2): a plain paste failure falls back to
+  // copy instead of losing the text, and the pipeline recovers.
+  it('falls back to copy when paste fails with a plain error, and recovers', async () => {
+    engine.setError('paste', new Error('paste boom'))
+    const p = pipeline()
+    const notices: string[] = []
+    p.onState = (s: PipelineState): void => {
+      if (s.type === 'notice') notices.push(s.message)
+    }
+    const outcome = await dictate(p)
+    expect(outcome).toEqual({ type: 'copied', text: 'Polished.' })
+    expect(engine.callsFor('paste')).toHaveLength(1)
+    expect(engine.callsFor('copy')).toHaveLength(1)
+    expect(notices).toEqual([Pipeline.Notice.copied('mac')])
+
+    engine.clearError('paste')
+    expect(await dictate(p)).toEqual({ type: 'inserted', text: 'Polished.' })
+  })
+
+  // Added for review round 1 (ruling R10, Critical Fix 2): when the copy fallback also fails,
+  // the outcome is `failed` with Notice.failed, not a stuck pipeline -- and it recovers.
+  it('reports failed when paste and its copy fallback both fail, and recovers', async () => {
+    engine.setError('paste', new Error('paste boom'))
+    engine.setError('copy', new Error('copy boom'))
+    const p = pipeline()
+    const notices: string[] = []
+    const states: PipelineState[] = []
+    p.onState = (s: PipelineState): void => {
+      states.push(s)
+      if (s.type === 'notice') notices.push(s.message)
+    }
+    const outcome = await dictate(p)
+    expect(outcome).toEqual({ type: 'failed', reason: 'copy boom' })
+    expect(notices).toEqual([Pipeline.Notice.failed])
+    expect(states[states.length - 1]).toEqual({ type: 'idle' })
+    expect(p.isListening).toBe(false)
+    expect(p.isBusy).toBe(false)
+
+    engine.clearError('paste')
+    engine.clearError('copy')
+    expect(await dictate(p)).toEqual({ type: 'inserted', text: 'Polished.' })
+  })
+
+  // Added for review round 1 (ruling R10, Critical Fix 3): copy failing on the "front app
+  // changed" branch (no paste attempted at all) is still a clean `failed`, and it recovers.
+  it('reports failed when copy fails after the front app changed, and recovers', async () => {
+    engine.setReply('context', slackContext, terminalContext)
+    engine.setError('copy', new Error('copy boom'))
+    const p = pipeline()
+    const notices: string[] = []
+    p.onState = (s: PipelineState): void => {
+      if (s.type === 'notice') notices.push(s.message)
+    }
+    const outcome = await dictate(p)
+    expect(outcome).toEqual({ type: 'failed', reason: 'copy boom' })
+    expect(notices).toEqual([Pipeline.Notice.failed])
+    expect(engine.callsFor('paste')).toHaveLength(0)
+    expect(p.isListening).toBe(false)
+    expect(p.isBusy).toBe(false)
+
+    engine.clearError('copy')
+    engine.setReply('context', slackContext)
+    expect(await dictate(p)).toEqual({ type: 'inserted', text: 'Polished.' })
+  })
+
+  // Added for review round 1 (ruling R10, Critical Fix 3): the fresh context() lookup at the
+  // top of deliver can fail too (distinct from begin's own context lookup, which must still
+  // succeed) -- that's also a clean `failed`, and it recovers.
+  it('reports failed when the fresh context lookup in deliver fails with a plain error, and recovers', async () => {
+    engine.queueReply('context', slackContext) // begin()'s lookup
+    engine.queueError('context', new Error('context boom')) // deliver()'s fresh lookup
+    const p = pipeline()
+    const notices: string[] = []
+    p.onState = (s: PipelineState): void => {
+      if (s.type === 'notice') notices.push(s.message)
+    }
+    const outcome = await dictate(p)
+    expect(outcome).toEqual({ type: 'failed', reason: 'context boom' })
+    expect(notices).toEqual([Pipeline.Notice.failed])
+    expect(engine.callsFor('paste')).toHaveLength(0)
+    expect(engine.callsFor('copy')).toHaveLength(0)
+    expect(p.isListening).toBe(false)
+    expect(p.isBusy).toBe(false)
+
+    expect(await dictate(p)).toEqual({ type: 'inserted', text: 'Polished.' })
+  })
+
+  // Added for review round 1 (ruling R10, Critical Fix 3): cancelRecording failing with a plain
+  // error must not leave `target` stuck set (which would block every future recording) -- the
+  // catch-all resets it and makes a best-effort second cancel attempt.
+  it('reports failed when cancelRecording fails with a plain error, and recovers', async () => {
+    engine.setError('cancelRecording', new Error('cancel boom'))
+    const p = pipeline()
+    const notices: string[] = []
+    p.onState = (s: PipelineState): void => {
+      if (s.type === 'notice') notices.push(s.message)
+    }
+    await p.handle('beginRecording')
+    const outcome = await p.handle('cancelRecording')
+    expect(outcome).toEqual({ type: 'failed', reason: 'cancel boom' })
+    expect(notices).toEqual([Pipeline.Notice.failed])
+    expect(engine.callsFor('cancelRecording')).toHaveLength(2) // the failed attempt, plus the catch-all's best-effort retry
+    expect(p.isListening).toBe(false)
+    expect(p.isBusy).toBe(false)
+
+    engine.clearError('cancelRecording')
+    expect(await dictate(p)).toEqual({ type: 'inserted', text: 'Polished.' })
+  })
+
+  // Added for review round 1 (Minor 2): the copied notice text is platform-specific.
+  it('shows the Windows copied notice text', async () => {
+    engine.setReply('paste', { result: 'copied' })
+    const p = pipeline({ platform: 'windows' })
+    const notices: string[] = []
+    p.onState = (s: PipelineState): void => {
+      if (s.type === 'notice') notices.push(s.message)
+    }
+    expect(await dictate(p)).toEqual({ type: 'copied', text: 'Polished.' })
+    expect(notices).toEqual(['Copied — press Ctrl+V'])
   })
 
   // Added by the task-10 brief, step 1: history is opt-in.

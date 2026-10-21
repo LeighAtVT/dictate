@@ -38,11 +38,14 @@ export const terminalContext: ReplyMap['context'] = {
  * in v2 the engine (not the brain) owns the microphone, the speech gate, and Whisper, so one
  * `stopRecording` reply now stands in for what used to be a recorder + a transcriber.
  */
+type OneShot<T> = { ok: true; value: T } | { ok: false; error: unknown }
+
 export class FakeEngine implements EngineApi {
   readonly calls: EngineRequest[] = []
   readonly calledOps = new Set<Op>()
   private readonly queues = new Map<Op, unknown[]>()
   private readonly errors = new Map<Op, unknown>()
+  private readonly oneShots = new Map<Op, OneShot<unknown>[]>()
   private readonly gates = new Map<Op, { promise: Promise<void>; resolve: () => void }>()
 
   constructor() {
@@ -71,6 +74,27 @@ export class FakeEngine implements EngineApi {
     this.errors.delete(op)
   }
 
+  /**
+   * Queues one success reply for the *next* call to `op` only, ahead of the standing
+   * error/reply; after that one call it falls back to whatever `setReply`/`setError` has
+   * standing. Lets a test target one call out of several to the same op in a single dictation
+   * (e.g. `context` is called once in `begin` and again in `deliver`).
+   */
+  queueReply<O extends Op>(op: O, reply: ReplyMap[O]): void {
+    this.pushOneShot(op, { ok: true, value: reply })
+  }
+
+  /** Queues one failure for the *next* call to `op` only -- see `queueReply`. */
+  queueError(op: Op, err: unknown): void {
+    this.pushOneShot(op, { ok: false, error: err })
+  }
+
+  private pushOneShot(op: Op, outcome: OneShot<unknown>): void {
+    const queue = this.oneShots.get(op)
+    if (queue) queue.push(outcome)
+    else this.oneShots.set(op, [outcome])
+  }
+
   callsFor(op: Op): EngineRequest[] {
     return this.calls.filter((c) => c.op === op)
   }
@@ -93,6 +117,12 @@ export class FakeEngine implements EngineApi {
     this.calledOps.add(req.op)
     const gate = this.gates.get(req.op)
     if (gate) await gate.promise
+    const oneShotQueue = this.oneShots.get(req.op)
+    if (oneShotQueue && oneShotQueue.length > 0) {
+      const outcome = oneShotQueue.shift() as OneShot<ReplyMap[O]>
+      if (!outcome.ok) throw outcome.error
+      return outcome.value
+    }
     if (this.errors.has(req.op)) throw this.errors.get(req.op)
     const queue = this.queues.get(req.op)
     if (queue && queue.length > 0) {

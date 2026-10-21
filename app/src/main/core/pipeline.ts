@@ -95,6 +95,8 @@ export class Pipeline {
   private target: AppTarget | null = null
   private chain: Promise<unknown> = Promise.resolve()
   private busy = false
+  /** Counts finishRecording calls that have been queued but haven't settled yet (review R9). */
+  private pendingFinishes = 0
   private timings: StageTimings | null = null
 
   onState?: (s: PipelineState) => void
@@ -120,10 +122,23 @@ export class Pipeline {
    * modifiers held so far chose; the value given with 'finishRecording' wins. Every call is
    * appended, in arrival order, to one promise chain (decision 1), so e.g. a cancelRecording
    * arriving while `begin` still awaits `context()` waits for `begin` to finish setting its
-   * target before it runs. An error in one call never breaks the chain for the next.
+   * target before it runs. `handle` never rejects: `process` converts every error it sees --
+   * not just EngineGone/EngineTimeout, any engine or polish failure -- into a `failed` outcome
+   * plus a notice, so one call's error can never break the chain for the next.
+   *
+   * A `beginRecording` that arrives while the pipeline is busy, or while a `finishRecording` is
+   * already queued ahead of it, is dropped outright (v1's ignore-press-while-busy rule) instead
+   * of being queued to run later once the pipeline goes idle.
    */
   async handle(action: HotkeyAction, mode: DictationMode = 'dictate'): Promise<PipelineOutcome | null> {
+    if (action === 'beginRecording' && (this.busy || this.pendingFinishes > 0)) return null
+    if (action === 'finishRecording') this.pendingFinishes++
     const result = this.chain.then(() => this.process(action, mode))
+    if (action === 'finishRecording') {
+      void result.finally(() => {
+        this.pendingFinishes--
+      })
+    }
     this.chain = result.then(
       () => undefined,
       () => undefined
@@ -154,7 +169,23 @@ export class Pipeline {
         this.busy = false
         return this.done({ type: 'failed', reason: 'recording lost' }, Pipeline.Notice.recordingLost)
       }
-      throw err
+      // Any other error (e.g. a plain engine failure that isn't EngineGone/EngineTimeout) must
+      // still leave the pipeline idle and ready for the next dictation, not stuck mid-flow.
+      // A recording may still be live underneath this error (e.g. cancelRecording itself
+      // failed), so make a best-effort attempt to stop it; swallow any error from that too.
+      if (this.target !== null) {
+        try {
+          await this.deps.engine.request({ op: 'cancelRecording' })
+        } catch {
+          // best effort only
+        }
+      }
+      this.target = null
+      this.busy = false
+      return this.done(
+        { type: 'failed', reason: err instanceof Error ? err.message : String(err) },
+        Pipeline.Notice.failed
+      )
     }
   }
 
@@ -209,9 +240,17 @@ export class Pipeline {
         } else if (style === 'off') {
           refusal = Pipeline.Notice.polishOff
         } else {
-          const sel = await this.engineCall(this.deps.engine.request({ op: 'selection' }))
-          if (sel.text !== null) selected = sel.text
-          else refusal = Pipeline.Notice.highlightFirst
+          try {
+            const sel = await this.engineCall(this.deps.engine.request({ op: 'selection' }))
+            if (sel.text !== null) selected = sel.text
+            else refusal = Pipeline.Notice.highlightFirst
+          } catch (err) {
+            // A plain engine failure here is treated like v1's nil selection result: refuse the
+            // edit, but still transcribe and keep listening for stopRecording below so the mic
+            // doesn't stay open and no words are lost.
+            if (err instanceof RecordingLost) throw err
+            refusal = Pipeline.Notice.highlightFirst
+          }
         }
       }
 
@@ -319,8 +358,16 @@ export class Pipeline {
       await this.engineCall(this.deps.engine.request({ op: 'copy', text: final }))
       outcome = { type: 'copied', text: final }
     } else {
-      const res = await this.engineCall(this.deps.engine.request({ op: 'paste', text: final }))
-      outcome = res.result === 'pasted' ? { type: 'inserted', text: final } : { type: 'copied', text: final }
+      try {
+        const res = await this.engineCall(this.deps.engine.request({ op: 'paste', text: final }))
+        outcome = res.result === 'pasted' ? { type: 'inserted', text: final } : { type: 'copied', text: final }
+      } catch (err) {
+        // A plain paste failure falls back to copy rather than losing the text; if copy also
+        // fails, that error propagates up to process()'s catch-all as a `failed` outcome.
+        if (err instanceof RecordingLost) throw err
+        await this.engineCall(this.deps.engine.request({ op: 'copy', text: final }))
+        outcome = { type: 'copied', text: final }
+      }
     }
 
     const insertTime = (Date.now() - insertStart) / 1000
