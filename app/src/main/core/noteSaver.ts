@@ -19,7 +19,13 @@ export interface NoteSaverOptions {
   timeoutMs?: number
 }
 
-export class NoteSaver {
+// Mirrors Sources/DictateCore/NoteSaver.swift's `NoteSaving` protocol: the surface
+// Pipeline (task 10) depends on, so its tests can pass a fake instead of a real NoteSaver.
+export interface NoteSaving {
+  save(text: string): Promise<NoteDestination | null>
+}
+
+export class NoteSaver implements NoteSaving {
   static readonly endpoint = ENDPOINT
 
   private readonly fetchFn: typeof fetch
