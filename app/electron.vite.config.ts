@@ -3,13 +3,9 @@ import { defineConfig } from 'electron-vite'
 import react from '@vitejs/plugin-react'
 
 export default defineConfig({
-  main: {
-    build: {
-      // plist ships ESM only (an "import" export, no "require"), so the CommonJS main bundle
-      // can't require it at run time: bundle it in instead.
-      externalizeDeps: { exclude: ['plist'] }
-    }
-  },
+  // Main bundles plist (a devDependency, so not externalized): it ships ESM only, which the
+  // CommonJS main bundle couldn't require at run time.
+  main: {},
   preload: {
     build: {
       rollupOptions: {

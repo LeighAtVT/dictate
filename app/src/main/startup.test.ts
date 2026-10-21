@@ -23,6 +23,7 @@ describe('LaunchAgent (port of LaunchAgentTests)', () => {
     expect((plist['KeepAlive'] as Record<string, boolean>)['SuccessfulExit']).toBe(false)
     expect(plist['ProcessType']).toBe('Interactive')
     expect(plist['ThrottleInterval']).toBe(5)
+    expect(data).toContain('<integer>5</integer>') // an integer, as v1 writes it, not a real
     expect(plist['LimitLoadToSessionType']).toBe('Aqua')
   })
 
