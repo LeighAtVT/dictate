@@ -37,18 +37,45 @@
 // same state `otherKeyDown` mid-hold produces), which only reacts to
 // `keyUp` (back to `idle`) -- no timer, no lock, no stale-mode finish.
 //
-// Review round 3 (ruling R13): a toggle (or hold) begin the pipeline
-// *accepts* (`canBegin()` true) can still end without ever starting a
-// recording -- secure input, the model still loading, a dead mic. `onAction`
-// is fire-and-forget, so the controller has no way to learn that on its own;
-// `pipelineSettled` is how the eventual wiring (Task 11) tells it.
+// Review round 3 (ruling R13, replaced in round 4 by R14b -- see below): a toggle (or hold) begin
+// the pipeline *accepts* (`canBegin()` true) can still end without ever starting a recording --
+// secure input, the model still loading, a dead mic. The original fix was a public
+// `pipelineSettled` method Task 11's wiring would call on every pipeline `idle`/`notice` state;
+// review round 4 found that contract let a cancel's `idle` (which can arrive while a newer begin
+// is already accepted and queued behind it, since cancelling doesn't raise `busy` or
+// `pendingFinishes`) clear `holdActive`/`toggleMode` out from under that live recording.
+//
+// Review round 4 (ruling R14b): `pipelineSettled` is gone. Instead, `onAction`'s return value is
+// used directly: wiring passes `(a, m) => pipeline.handle(a, m)` synchronously (so `canBegin =
+// () => pipeline.acceptsBegin` reflects the same instant `handle` will check), and
+// `pipeline.handle` resolves a `beginRecording` call to a non-null `PipelineOutcome` exactly when
+// it ended without ever starting a recording (`skippedSecure`/`modelNotReady`/a mic failure), null
+// when a recording actually started. `sendAction` tracks a generation counter per begin so only
+// the *latest* begin's resolution can clear `toggleMode`/`holdActive` -- a stale begin's promise
+// settling late (e.g. the cancel-then-re-press race above) changes nothing, since by then a newer
+// generation is current.
+//
+// Review round 4 (ruling R14a): a toggle started by `handleShortcut` while the hold-to-talk key
+// is still physically down (its begin having just been refused, leaving the machine in
+// `cancelled`) left the machine stuck: `cancelled` only reacts to `keyUp`, but the key's eventual
+// release arrives while the toggle owns the key path, so `onEvent`'s `key` case throws it away
+// (`:118`) -- the machine never reaches `idle`, and the first real press after the toggle ends is
+// eaten. `handleShortcut` now resets the machine when it starts a toggle; that's safe because a
+// toggle can only start while `holdActive` is false, so the hold path owns no live recording to
+// disrupt.
 import type { EngineEvent, Modifier, ModeAction } from '../../shared/protocol'
 import { HotkeyStateMachine, type HotkeyAction, type HotkeyEvent } from './hotkeyStateMachine'
 import { ModeTracker, type DictationMode } from './modes'
 
 export class HotkeyController {
   private readonly noteModifier: Modifier
-  private readonly onAction: (action: HotkeyAction, mode: DictationMode) => void
+  /**
+   * Review round 4 (ruling R14b): fire-and-forget for every action except `beginRecording`, whose
+   * return value `sendAction` uses -- see that method's doc comment, and the ruling R14b header
+   * comment above, for the contract wiring must follow (`(a, m) => pipeline.handle(a, m)`,
+   * called synchronously).
+   */
+  private readonly onAction: (action: HotkeyAction, mode: DictationMode) => void | Promise<unknown>
   private readonly now: () => number
   private readonly schedule: (fn: () => void, ms: number) => unknown
   /** Whether a beginRecording right now would actually be accepted (Pipeline.acceptsBegin). */
@@ -62,13 +89,15 @@ export class HotkeyController {
   private keyIsDown = false
   /** Non-null while the shortcut-toggle path owns an active recording; holds the mode it began with. */
   private toggleMode: ModeAction | null = null
+  /** Review round 4 (R14b): bumped on every `beginRecording` sent, so a stale begin's resolution can't clobber a newer one. */
+  private beginGeneration = 0
 
   /** Called during a recording when Shift or the note modifier changes what it's for. */
   onModeChange?: (mode: DictationMode) => void
 
   constructor(
     noteModifier: Modifier,
-    onAction: (action: HotkeyAction, mode: DictationMode) => void,
+    onAction: (action: HotkeyAction, mode: DictationMode) => void | Promise<unknown>,
     now: () => number = () => performance.now() / 1000,
     schedule: (fn: () => void, ms: number) => unknown = setTimeout,
     canBegin: () => boolean = () => true
@@ -82,18 +111,36 @@ export class HotkeyController {
   }
 
   /**
-   * Review round 3 (ruling R13): call this on every pipeline `idle`/`notice` state, with whether
-   * the pipeline is still listening (recording) afterward. A begin the pipeline accepted but
-   * that never actually started recording (secure input, the model still loading, a dead mic)
-   * leaves `toggleMode`/`holdActive` set with nothing behind them, since `onAction` never reports
-   * back. When `listening` is false, this clears both so the talk key and the shortcut toggle
-   * work again; it's a no-op while a real recording is still in progress. Not wired up yet --
-   * that lands with Task 11's production wiring.
+   * Review round 4 (ruling R14b): routes every dispatched action through `onAction`, additionally
+   * tracking `beginRecording`'s outcome. `pipeline.handle` resolves a `beginRecording` to a
+   * non-null `PipelineOutcome` exactly when it was accepted (`canBegin()` was true) but ended
+   * without ever starting a recording -- secure input, the model still loading, a dead mic -- and
+   * to null when a recording actually started. A generation counter guards against acting on a
+   * stale begin: only the most recently sent `beginRecording`'s resolution can clear
+   * `toggleMode`/`holdActive`. A rejection is swallowed -- `onAction` shouldn't reject, but this
+   * must never surface as an unhandled rejection either way.
    */
-  pipelineSettled(listening: boolean): void {
-    if (listening) return
-    this.toggleMode = null
-    this.holdActive = false
+  private sendAction(action: HotkeyAction, mode: DictationMode): void {
+    if (action !== 'beginRecording') {
+      this.onAction(action, mode)
+      return
+    }
+    const generation = ++this.beginGeneration
+    const result = this.onAction(action, mode)
+    if (result && typeof (result as Promise<unknown>).then === 'function') {
+      void (result as Promise<unknown>).then(
+        (outcome) => {
+          if (generation !== this.beginGeneration) return // a newer begin has since been sent
+          if (outcome != null) {
+            // Accepted but never actually started recording -- free whichever path sent it, so
+            // the talk key and the shortcut toggle both work again.
+            this.toggleMode = null
+            this.holdActive = false
+          }
+        },
+        () => {} // onAction shouldn't reject, but never let that become an unhandled rejection
+      )
+    }
   }
 
   /** For a hotkey change or engine restart: cancels any recording in progress, as HotkeyMonitor.hotkey.didSet does. */
@@ -168,12 +215,19 @@ export class HotkeyController {
       // and every key/otherKey event gets thrown away in the meantime (:70/:79), killing the
       // hold-to-talk key with no sign why.
       if (!this.canBegin()) return
+      // Review round 4 (R14a): a hold's refused begin can leave the machine stuck in `cancelled`,
+      // which only clears on that key's keyUp -- but once this toggle starts, the key path is
+      // thrown away (see `onEvent`'s `key` case), so that keyUp would never arrive and the
+      // machine would stay stuck past this toggle too. Safe to reset unconditionally here: a
+      // toggle can only start while `holdActive` is false, so the hold path owns no live
+      // recording for the machine to be mid-cycle on.
+      this.machine = new HotkeyStateMachine()
       this.toggleMode = action
-      this.onAction('beginRecording', action)
+      this.sendAction('beginRecording', action)
     } else {
       const mode = this.toggleMode
       this.toggleMode = null
-      this.onAction('finishRecording', mode)
+      this.sendAction('finishRecording', mode)
     }
   }
 
@@ -193,7 +247,7 @@ export class HotkeyController {
       this.modes.begin(held) // modifiers already down count too
       this.holdActive = true
     }
-    if (action !== 'none') this.onAction(action, this.modes.mode)
+    if (action !== 'none') this.sendAction(action, this.modes.mode)
     if (action === 'beginRecording' && this.modes.mode !== 'dictate') this.onModeChange?.(this.modes.mode)
     if (action === 'finishRecording' || action === 'cancelRecording') this.holdActive = false
     if (this.machine.awaitingSecondTap) {

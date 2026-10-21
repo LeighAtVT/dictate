@@ -16,7 +16,7 @@ describe('HotkeyController', () => {
     let t = 10.0
     const controller = new HotkeyController(
       'control',
-      (a, m) => actions.push([a, m]),
+      (a, m) => { actions.push([a, m]) },
       () => t,
       () => 0
     )
@@ -40,7 +40,7 @@ describe('HotkeyController', () => {
     let t = 1.0
     const controller = new HotkeyController(
       'control',
-      (a, m) => actions.push([a, m]),
+      (a, m) => { actions.push([a, m]) },
       () => t,
       () => 0
     )
@@ -73,7 +73,7 @@ describe('HotkeyController', () => {
     let t = 1.0
     const controller = new HotkeyController(
       'control',
-      (a, m) => actions.push([a, m]),
+      (a, m) => { actions.push([a, m]) },
       () => t,
       (fn, ms) => {
         scheduled = { fn, ms }
@@ -98,7 +98,7 @@ describe('HotkeyController', () => {
 
   it('shortcut toggle: note begins, dictate finishes with the mode it began with', () => {
     const actions: Array<[HotkeyAction, DictationMode]> = []
-    const controller = new HotkeyController('control', (a, m) => actions.push([a, m]))
+    const controller = new HotkeyController('control', (a, m) => { actions.push([a, m]) })
 
     controller.onEvent({ event: 'shortcut', action: 'note' })
     controller.onEvent({ event: 'shortcut', action: 'dictate' })
@@ -111,7 +111,7 @@ describe('HotkeyController', () => {
 
   it('reset() while recording cancels it', () => {
     const actions: Array<[HotkeyAction, DictationMode]> = []
-    const controller = new HotkeyController('control', (a, m) => actions.push([a, m]))
+    const controller = new HotkeyController('control', (a, m) => { actions.push([a, m]) })
 
     controller.onEvent({ event: 'key', down: true, held: [] }) // begin
     controller.reset()
@@ -128,7 +128,7 @@ describe('HotkeyController', () => {
     let t = 1.0
     const controller = new HotkeyController(
       'control',
-      (a, m) => actions.push([a, m]),
+      (a, m) => { actions.push([a, m]) },
       () => t,
       () => 0
     )
@@ -149,7 +149,7 @@ describe('HotkeyController', () => {
     let t = 1.0
     const controller = new HotkeyController(
       'control',
-      (a, m) => actions.push([a, m]),
+      (a, m) => { actions.push([a, m]) },
       () => t,
       () => 0
     )
@@ -171,7 +171,7 @@ describe('HotkeyController', () => {
     let t = 1.0
     const controller = new HotkeyController(
       'control',
-      (a, m) => actions.push([a, m]),
+      (a, m) => { actions.push([a, m]) },
       () => t,
       () => 0
     )
@@ -202,7 +202,7 @@ describe('HotkeyController', () => {
     let t = 1.0
     const controller = new HotkeyController(
       'control',
-      (a, m) => actions.push([a, m]),
+      (a, m) => { actions.push([a, m]) },
       () => t,
       () => 0,
       () => canBegin
@@ -232,7 +232,7 @@ describe('HotkeyController', () => {
     let t = 1.0
     const controller = new HotkeyController(
       'control',
-      (a, m) => actions.push([a, m]),
+      (a, m) => { actions.push([a, m]) },
       () => t,
       () => 0,
       () => false
@@ -257,7 +257,7 @@ describe('HotkeyController', () => {
     let t = 1.0
     const controller = new HotkeyController(
       'control',
-      (a, m) => actions.push([a, m]),
+      (a, m) => { actions.push([a, m]) },
       () => t,
       (fn, ms) => {
         scheduled = { fn, ms }
@@ -268,6 +268,12 @@ describe('HotkeyController', () => {
     controller.onEvent({ event: 'key', down: true, held: [] }) // tap begins, dropped: canBegin is false
     t = 1.1
     controller.onEvent({ event: 'key', down: false, held: [] }) // tap release
+
+    // Review round 4 (Minor): the fixed dispatch() never reaches `tapped` on a dropped begin
+    // (cancelled -> idle instead), so no double-tap timer is armed at all -- prove that directly,
+    // rather than only defensively firing it below (which proved nothing: an armed timer at this
+    // same `t` would've returned `none` from the state machine's own stale-timer check anyway).
+    expect(scheduled).toBeNull()
 
     canBegin = true
     controller.onEvent({ event: 'shortcut', action: 'note' }) // begins a real toggle recording
@@ -293,7 +299,7 @@ describe('HotkeyController', () => {
     let t = 1.0
     const controller = new HotkeyController(
       'control',
-      (a, m) => actions.push([a, m]),
+      (a, m) => { actions.push([a, m]) },
       () => t,
       () => 0,
       () => canBegin
@@ -319,16 +325,19 @@ describe('HotkeyController', () => {
     ])
   })
 
-  // Added for review round 3 (ruling R12): holding the talk key through a refused begin must not
-  // leave holdActive stuck true, which would block a shortcut used while the key is still
-  // physically down; the eventual release must also stay a harmless no-op.
+  // Added for review round 3 (ruling R12), extended for review round 4 (ruling R14a): holding the
+  // talk key through a refused begin must not leave holdActive stuck true, which would block a
+  // shortcut used while the key is still physically down; the eventual release must also stay a
+  // harmless no-op, and -- the R14a addition -- the machine must not be left stuck in `cancelled`
+  // past the toggle, which would otherwise eat the very next real press.
   it('holding the key through a refused begin and then using a shortcut leaves nothing stuck', () => {
     const actions: Array<[HotkeyAction, DictationMode]> = []
     let canBegin = false
+    let t = 1.0
     const controller = new HotkeyController(
       'control',
-      (a, m) => actions.push([a, m]),
-      () => 1.0,
+      (a, m) => { actions.push([a, m]) },
+      () => t,
       () => 0,
       () => canBegin
     )
@@ -340,23 +349,110 @@ describe('HotkeyController', () => {
 
     controller.onEvent({ event: 'key', down: false, held: [] }) // eventually releasing the held key: harmless no-op
     expect(actions).toEqual([['beginRecording', 'note']])
+
+    controller.onEvent({ event: 'shortcut', action: 'note' }) // finishes the toggle
+    expect(actions).toEqual([
+      ['beginRecording', 'note'],
+      ['finishRecording', 'note'],
+    ])
+
+    // Review round 4 (R14a): before the fix, the refused begin's `cancelled` state survived the
+    // toggle (its key-up at :118 was thrown away while the toggle owned the key path), so this
+    // next real press was eaten as a stray no-op instead of starting a new recording.
+    controller.onEvent({ event: 'key', down: true, held: [] })
+    t = 1.5
+    controller.onEvent({ event: 'key', down: false, held: [] })
+    expect(actions).toEqual([
+      ['beginRecording', 'note'],
+      ['finishRecording', 'note'],
+      ['beginRecording', 'dictate'],
+      ['finishRecording', 'dictate'],
+    ])
   })
 
-  // Added for review round 3 (ruling R13): a toggle begin the pipeline accepted but that never
-  // started recording (secure input, model loading, dead mic) must not leave toggleMode stuck --
-  // pipelineSettled(false) is how the eventual wiring reports that back.
-  it('pipelineSettled(false) after a toggle begin that never started recording leaves the talk key working', () => {
+  // Added for review round 4 (ruling R14a): the same stuck-machine defect from the `finishingDown`
+  // state, not just `cancelled` -- finishing a locked recording with the key still held leaves the
+  // machine in `finishingDown` (only clears on that key's keyUp); a shortcut tapped while the key
+  // is still down must not leave it stuck there past the toggle either.
+  it('finishing a locked recording, then a shortcut while the key is still down, leaves the next press working', () => {
     const actions: Array<[HotkeyAction, DictationMode]> = []
     let t = 1.0
     const controller = new HotkeyController(
       'control',
-      (a, m) => actions.push([a, m]),
+      (a, m) => { actions.push([a, m]) },
       () => t,
       () => 0
     )
 
-    controller.onEvent({ event: 'shortcut', action: 'note' }) // begins a toggle that never actually starts recording
-    controller.pipelineSettled(false) // the pipeline reports idle/notice, not listening
+    controller.onEvent({ event: 'key', down: true, held: [] }) // tap 1 begins
+    t = 1.1
+    controller.onEvent({ event: 'key', down: false, held: [] }) // tap 1 release: awaiting second tap
+    t = 1.2
+    controller.onEvent({ event: 'key', down: true, held: [] }) // tap 2 within the window: lockRecording -> lockedDown
+    t = 1.3
+    controller.onEvent({ event: 'key', down: false, held: [] }) // locked, hands-free
+    t = 1.4
+    controller.onEvent({ event: 'key', down: true, held: [] }) // finishing press: finishRecording, machine -> finishingDown while key is still down
+
+    expect(actions).toEqual([
+      ['beginRecording', 'dictate'],
+      ['lockRecording', 'dictate'],
+      ['finishRecording', 'dictate'],
+    ])
+
+    controller.onEvent({ event: 'shortcut', action: 'note' }) // begin a toggle while the finishing key is still down
+    controller.onEvent({ event: 'shortcut', action: 'note' }) // finish the toggle
+
+    expect(actions).toEqual([
+      ['beginRecording', 'dictate'],
+      ['lockRecording', 'dictate'],
+      ['finishRecording', 'dictate'],
+      ['beginRecording', 'note'],
+      ['finishRecording', 'note'],
+    ])
+
+    t = 1.5
+    controller.onEvent({ event: 'key', down: false, held: [] }) // the finishing key's belated release: harmless no-op
+
+    t = 2.0
+    controller.onEvent({ event: 'key', down: true, held: [] }) // the next real press must work normally
+    t = 2.5
+    controller.onEvent({ event: 'key', down: false, held: [] })
+
+    expect(actions).toEqual([
+      ['beginRecording', 'dictate'],
+      ['lockRecording', 'dictate'],
+      ['finishRecording', 'dictate'],
+      ['beginRecording', 'note'],
+      ['finishRecording', 'note'],
+      ['beginRecording', 'dictate'],
+      ['finishRecording', 'dictate'],
+    ])
+  })
+
+  // Added for review round 4 (ruling R14b, replacing R13's pipelineSettled): a toggle begin the
+  // pipeline accepted but that never started recording resolves `onAction`'s promise to a non-null
+  // PipelineOutcome (e.g. `{type:'modelNotReady'}` -- the model was still loading). The controller
+  // must learn that from the resolution itself and clear toggleMode/holdActive, leaving the talk
+  // key working on the next press.
+  it('a toggle begin whose promise resolves a non-null outcome leaves the talk key working', async () => {
+    const actions: Array<[HotkeyAction, DictationMode]> = []
+    let resolveBegin: ((outcome: unknown) => void) | null = null
+    let t = 1.0
+    const controller = new HotkeyController(
+      'control',
+      (a, m) => {
+        actions.push([a, m])
+        if (a === 'beginRecording') return new Promise((resolve) => (resolveBegin = resolve))
+        return undefined
+      },
+      () => t,
+      () => 0
+    )
+
+    controller.onEvent({ event: 'shortcut', action: 'note' }) // begins a toggle; the pipeline hasn't resolved it yet
+    resolveBegin!({ type: 'modelNotReady' }) // accepted, but it never actually started recording
+    await Promise.resolve() // let sendAction's .then() microtask run
 
     controller.onEvent({ event: 'key', down: true, held: [] }) // the talk key must work normally now
     t = 1.5 // past MIN_HOLD, so release finishes rather than counting as a tap
@@ -369,26 +465,88 @@ describe('HotkeyController', () => {
     ])
   })
 
-  // Added for review round 3 (ruling R13): pipelineSettled(true) must be a no-op while a
-  // recording is genuinely still in progress.
-  it('pipelineSettled(true) during a live toggle changes nothing', () => {
+  // Added for review round 4 (ruling R14b): reproduces the reviewer's scratch sequence that broke
+  // the old pipelineSettled(false)-on-every-idle contract -- an Escape cancel's pipeline round trip
+  // can still be in flight when a fresh press is accepted and goes live; if that stale cancel later
+  // "settling" were allowed to clear holdActive, a mid-hold shortcut would slip through and finish
+  // the live dictation as something else. The new design never reacts to anything but the
+  // *current* begin's own resolution, so the live hold's holdActive must stay set throughout.
+  it("an older cancel settling after a fresh press has gone live does not clear holdActive; a shortcut mid-hold is still ignored", async () => {
     const actions: Array<[HotkeyAction, DictationMode]> = []
-    const controller = new HotkeyController('control', (a, m) => actions.push([a, m]))
+    let resolveCancel: ((outcome: unknown) => void) | null = null
+    let t = 1.0
+    const controller = new HotkeyController(
+      'control',
+      (a, m) => {
+        actions.push([a, m])
+        if (a === 'cancelRecording') return new Promise((resolve) => (resolveCancel = resolve))
+        return undefined
+      },
+      () => t,
+      () => 0
+    )
 
-    controller.onEvent({ event: 'shortcut', action: 'note' }) // begin toggle
-    controller.pipelineSettled(true) // still listening; must not clear toggleMode
+    controller.onEvent({ event: 'key', down: true, held: [] }) // begin a hold
+    controller.onEvent({ event: 'escape' }) // cancel it; the pipeline's cancel round trip is still in flight
+    controller.onEvent({ event: 'key', down: false, held: [] }) // release the now-cancelled hold
+    controller.onEvent({ event: 'key', down: true, held: [] }) // re-press: a fresh begin, accepted and live
 
-    controller.onEvent({ event: 'shortcut', action: 'dictate' }) // finish toggle
+    resolveCancel!(null) // the OLDER cancel's round trip finally settles, well after the re-press
+    await Promise.resolve()
+    await Promise.resolve()
+
+    controller.onEvent({ event: 'shortcut', action: 'note' }) // must still be ignored: the re-press owns the recording
+    expect(actions).toEqual([
+      ['beginRecording', 'dictate'],
+      ['cancelRecording', 'dictate'],
+      ['beginRecording', 'dictate'],
+    ])
+
+    t = 1.5
+    controller.onEvent({ event: 'key', down: false, held: [] }) // the re-press's own release still finishes normally
+    expect(actions).toEqual([
+      ['beginRecording', 'dictate'],
+      ['cancelRecording', 'dictate'],
+      ['beginRecording', 'dictate'],
+      ['finishRecording', 'dictate'],
+    ])
+  })
+
+  // Added for review round 4 (ruling R14b): the generation counter must ignore a *stale* begin's
+  // resolution once a newer begin has been sent -- otherwise an old, slow-to-settle begin could
+  // clear toggleMode/holdActive out from under a different, newer recording that's actually live.
+  it('a stale begin promise resolving non-null after a newer begin has started changes nothing', async () => {
+    const actions: Array<[HotkeyAction, DictationMode]> = []
+    const beginResolvers: Array<(outcome: unknown) => void> = []
+    const controller = new HotkeyController('control', (a, m) => {
+      actions.push([a, m])
+      if (a === 'beginRecording') return new Promise((resolve) => beginResolvers.push(resolve))
+      return undefined
+    })
+
+    controller.onEvent({ event: 'shortcut', action: 'note' }) // begin 1 (generation 1); its promise stays pending
+    controller.onEvent({ event: 'shortcut', action: 'note' }) // finishes toggle 1
+    controller.onEvent({ event: 'shortcut', action: 'edit' }) // begin 2 (generation 2); its promise also stays pending
+
+    beginResolvers[0]!({ type: 'modelNotReady' }) // the STALE generation-1 promise finally settles
+    await Promise.resolve()
+    await Promise.resolve()
+
+    controller.onEvent({ event: 'key', down: true, held: [] }) // must still be ignored: toggleMode must still be 'edit'
+    controller.onEvent({ event: 'key', down: false, held: [] })
+    controller.onEvent({ event: 'shortcut', action: 'edit' }) // finishes toggle 2 normally
 
     expect(actions).toEqual([
       ['beginRecording', 'note'],
       ['finishRecording', 'note'],
+      ['beginRecording', 'edit'],
+      ['finishRecording', 'edit'],
     ])
   })
 
   it('escape cancels a toggle recording; otherKey does not', () => {
     const actions: Array<[HotkeyAction, DictationMode]> = []
-    const controller = new HotkeyController('control', (a, m) => actions.push([a, m]))
+    const controller = new HotkeyController('control', (a, m) => { actions.push([a, m]) })
 
     controller.onEvent({ event: 'shortcut', action: 'edit' }) // begin toggle
     controller.onEvent({ event: 'otherKey' }) // ignored: doesn't cancel a toggle recording
