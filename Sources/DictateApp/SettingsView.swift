@@ -5,6 +5,7 @@ import SwiftUI
 struct SettingsView: View {
     @ObservedObject var settings: AppSettings
     let knownApps: () -> [String]
+    let testModel: (ModelChoice) async -> Polisher.CheckResult
 
     @State private var keyInput = ""
     @State private var vocabText = ""
@@ -77,10 +78,14 @@ struct SettingsView: View {
                     }
                 }
             }
-            Section("Model") {
-                TextField("OpenRouter model", text: $settings.model)
-                Text("Only the transcribed text is sent, never audio.").font(.caption).foregroundStyle(.secondary)
+            Section("Cleanup and translation") {
+                ModelPicker(presets: ModelCatalog.cleanup, choice: $settings.model, test: testModel)
             }
+            Section("Edit by voice") {
+                ModelPicker(presets: ModelCatalog.edit, choice: $settings.editModel, test: testModel)
+            }
+            Text("Only the transcribed text is sent, never audio, and only to servers that keep nothing.")
+                .font(.caption).foregroundStyle(.secondary)
         }
         .formStyle(.grouped)
     }
@@ -166,5 +171,85 @@ struct SettingsView: View {
 
     private func binding(for id: String) -> Binding<Style?> {
         Binding(get: { settings.overrides[id] }, set: { settings.overrides[id] = $0 })
+    }
+}
+
+/// A recommended OpenRouter model, or any model ID typed in by hand.
+private struct ModelPicker: View {
+    let presets: [ModelPreset]
+    @Binding var choice: ModelChoice
+    let test: (ModelChoice) async -> Polisher.CheckResult
+
+    @State private var customID = ""
+    @State private var custom = false
+    @State private var status: String?
+    @State private var testing = false
+
+    private static let customTag = "custom"
+
+    var body: some View {
+        Picker("Model", selection: selection) {
+            ForEach(presets) { Text($0.id == presets.first?.id ? "\($0.name) (recommended)" : $0.name).tag($0.id) }
+            Text("Custom…").tag(Self.customTag)
+        }
+        if showingCustom {
+            TextField("OpenRouter model ID, e.g. openai/gpt-6-sol", text: $customID)
+                .onSubmit { runTest() }
+        }
+        HStack(alignment: .firstTextBaseline) {
+            Text(note).font(.caption).foregroundStyle(.secondary)
+            Spacer()
+            Button(testing ? "Testing…" : "Test") { runTest() }.disabled(testing || target == nil)
+        }
+        .onAppear { if preset == nil { customID = choice.id } }
+        if let status { Text(status).font(.caption) }
+    }
+
+    private var preset: ModelPreset? { ModelCatalog.preset(for: choice, in: presets) }
+    private var showingCustom: Bool { custom || preset == nil }
+    private var trimmedCustomID: String { customID.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    /// What Test would check: the typed ID while editing a custom model, otherwise the current choice.
+    private var target: ModelChoice? {
+        guard showingCustom else { return choice }
+        return trimmedCustomID.isEmpty ? nil : ModelChoice(id: trimmedCustomID)
+    }
+
+    private var note: String {
+        if showingCustom { return "Any model on openrouter.ai/models. Press Return or Test: it's used once it works." }
+        return preset?.note ?? ""
+    }
+
+    private var selection: Binding<String> {
+        Binding(
+            get: { showingCustom ? Self.customTag : choice.id },
+            set: { tag in
+                status = nil
+                if let picked = presets.first(where: { $0.id == tag }) {
+                    custom = false
+                    choice = picked.choice
+                } else {
+                    custom = true
+                    customID = preset == nil ? choice.id : ""
+                }
+            }
+        )
+    }
+
+    /// A typed model is only saved once it answers, so a typo never reaches dictation.
+    private func runTest() {
+        guard let target, !testing else { return }
+        testing = true
+        status = nil
+        Task {
+            let result = await test(target)
+            testing = false
+            switch result {
+            case .worked(let seconds):
+                if target != choice { choice = target }
+                status = "✓ Worked in \(seconds.formatted(.number.precision(.fractionLength(1)))) s"
+            case .failed(let reason): status = target == choice ? "✗ \(reason)" : "✗ \(reason) — not saved"
+            }
+        }
     }
 }

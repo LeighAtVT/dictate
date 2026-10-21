@@ -32,6 +32,7 @@ public final class Pipeline {
         public static let highlightFirst = "Highlight text first"
         public static let editNeedsKey = "Voice editing needs an OpenRouter key"
         public static let polishOff = "Polish is off for this app"
+        public static let polishRefused = "Pasted without cleanup — check Settings → Polish"
         public static let editFailed = "Edit failed — text unchanged"
         public static let savedTasks = "Saved to Tasks"
         public static let savedFile = "Saved to Dictate Notes"
@@ -202,11 +203,12 @@ public final class Pipeline {
     }
 
     /// Polished text in the "Paste in" language. Falls back to the local clean-up, with a notice when a
-    /// translation was wanted but couldn't happen.
+    /// translation was wanted but couldn't happen, or when OpenRouter refused the cleanup request.
     private func polishForOutput(_ raw: String, cleaned: String, style: Style, vocabulary: [String]) async -> (String, String?) {
         let output = language().output
         guard output != .same else {
-            return (await polisher.polish(raw, style: style, vocabulary: vocabulary, output: .same) ?? cleaned, nil)
+            if let polished = await polisher.polish(raw, style: style, vocabulary: vocabulary, output: .same) { return (polished, nil) }
+            return (cleaned, polisher.lastConfigError() == nil ? nil : Notice.polishRefused)
         }
         guard style != .off else { return (cleaned, Notice.notTranslated) }
         guard hasKey() else { return (cleaned, Notice.translateNeedsKey) }

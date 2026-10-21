@@ -7,6 +7,8 @@ final class StubTransport: HTTPTransport, @unchecked Sendable {
     var status = 200
     var delay: TimeInterval = 0
     var shouldThrow = false
+    /// Sent as-is instead of a chat reply, e.g. an OpenRouter error body.
+    var rawBody: String?
     private(set) var lastRequest: URLRequest?
     private(set) var calls = 0
 
@@ -17,6 +19,7 @@ final class StubTransport: HTTPTransport, @unchecked Sendable {
         lastRequest = req
         if delay > 0 { try await Task.sleep(for: .seconds(delay)) }
         if shouldThrow { throw URLError(.notConnectedToInternet) }
+        if let rawBody { return (Data(rawBody.utf8), status) }
         let content = try JSONSerialization.data(withJSONObject: ["content": reply ?? ""])
         let body = "{\"choices\":[{\"message\":\(String(decoding: content, as: UTF8.self))}]}"
         return (Data(body.utf8), status)

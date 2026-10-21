@@ -72,8 +72,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        // Rebuild the polisher when the model changes so the next dictation uses it.
-        settingsObserver = settings.$model.dropFirst().sink { [weak self] _ in
+        // Rebuild the polisher when a model changes so the next dictation uses it.
+        settingsObserver = settings.$model.combineLatest(settings.$editModel).dropFirst().sink { [weak self] _ in
             guard let self else { return }
             DispatchQueue.main.async { self.pipeline.polisher = self.makePolisher() }
         }
@@ -154,7 +154,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func makePolisher() -> Polisher {
         let apiKey = settings.apiKey
-        return Polisher(transport: URLSessionTransport(), apiKey: { apiKey.value() }, model: settings.model)
+        return Polisher(transport: URLSessionTransport(), apiKey: { apiKey.value() }, model: settings.model, editModel: settings.editModel)
     }
 
     // MARK: Model
@@ -241,7 +241,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func showSettings() {
         if settingsWindow == nil {
-            let view = SettingsView(settings: settings, knownApps: { [unowned self] in history.recent().map(\.bundleID) })
+            let view = SettingsView(settings: settings, knownApps: { [unowned self] in history.recent().map(\.bundleID) },
+                                    testModel: { [unowned self] in await makePolisher().check($0) })
             settingsWindow = makeWindow(title: "Dictate Settings", content: view)
         }
         present(settingsWindow)
