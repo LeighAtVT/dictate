@@ -45,7 +45,7 @@ public enum Hotkey: String, CaseIterable, Codable, Sendable {
 
     /// The flag bit that is set while this exact key is down. Side-specific device bits are used so the
     /// opposite-side key being held doesn't hide a release.
-    var downMask: UInt64 {
+    public var downMask: UInt64 {
         switch self {
         case .fn: 0x800000 // maskSecondaryFn
         case .rightOption: 0x40

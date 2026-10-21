@@ -7,8 +7,12 @@ import Foundation
 // requests and events, spec section 2.3) replaces the spike's bare
 // print-and-tap. The spike's periodic accessibility/microphone status
 // reporting and 3-second test recording were removed once the Task 1 spike
-// passed; the Fn `CGEventTap` stays (Task 4 replaces it with the full
-// `KeyTap`/mode handling).
+// passed.
+//
+// Task 4: the spike's inline Fn-only `KeyTap` (above, now removed) is
+// replaced by `EngineKit.KeyTap`, which reports the talk key, other modifier
+// changes, Esc, and "some other key" with modifier names instead of a bare
+// `down` flag, and supports changing the hotkey at runtime via `setHotkey`.
 
 /// Serializes every stdout write behind one queue: `Server` dispatches each
 /// request in its own `Task`, so without this, two replies' JSON could
@@ -22,40 +26,10 @@ private func writeLine(_ line: String) {
     }
 }
 
-/// Listen-only CGEventTap, created exactly as `HotkeyMonitor.start()` does, narrowed
-/// to the default hotkey (Fn) only.
-final class KeyTap: @unchecked Sendable {
-    private var tap: CFMachPort?
-
-    func start() {
-        guard tap == nil else { return }
-        let mask = (1 << CGEventType.flagsChanged.rawValue) | (1 << CGEventType.keyDown.rawValue)
-        let callback: CGEventTapCallBack = { _, type, event, refcon in
-            guard let refcon else { return Unmanaged.passUnretained(event) }
-            Unmanaged<KeyTap>.fromOpaque(refcon).takeUnretainedValue().handle(type, event)
-            return Unmanaged.passUnretained(event)
-        }
-        guard let tap = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap, options: .listenOnly,
-                                          eventsOfInterest: CGEventMask(mask), callback: callback,
-                                          userInfo: Unmanaged.passUnretained(self).toOpaque()) else {
-            writeLine(encodeLine(EngineEvent.log(message: "CGEventTap creation failed")))
-            return
-        }
-        self.tap = tap
-        CFRunLoopAddSource(CFRunLoopGetMain(), CFMachPortCreateRunLoopSource(nil, tap, 0), .commonModes)
-        CGEvent.tapEnable(tap: tap, enable: true)
-    }
-
-    private func handle(_ type: CGEventType, _ event: CGEvent) {
-        switch type {
-        case .tapDisabledByTimeout, .tapDisabledByUserInput:
-            if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
-        case .flagsChanged where event.getIntegerValueField(.keyboardEventKeycode) == Hotkey.fn.keyCode:
-            writeLine(encodeLine(EngineEvent.key(down: Hotkey.fn.isDown(flags: event.flags.rawValue), held: [])))
-        default:
-            break
-        }
-    }
+/// `setHotkey`'s reply for a raw value that isn't one of `Hotkey`'s cases. `description` (not the
+/// unparsed raw value, which is never echoed back) becomes the `EngineReply.error` message.
+private struct UnknownHotkey: Error, CustomStringConvertible {
+    var description: String { "unknown hotkey" }
 }
 
 /// Finds `--name value` in the CLI arguments.
@@ -82,6 +56,8 @@ let speech = Speech(
     emit: { event in writeLine(encodeLine(event)) }
 )
 
+let keyTap = KeyTap(hotkey: .default, emit: { event in writeLine(encodeLine(event)) })
+
 let handlers = Handlers(
     startRecording: {
         try speech.start()
@@ -101,6 +77,13 @@ let handlers = Handlers(
             fields["text"] = .string(text)
         }
         return fields
+    },
+    setHotkey: { key in
+        guard let hotkey = Hotkey(rawValue: key) else { throw UnknownHotkey() }
+        // `keyTap.hotkey` is read on the main thread by the tap callback without locking, so it's
+        // only ever written from the main thread too.
+        await MainActor.run { keyTap.hotkey = hotkey }
+        return [:]
     },
     quit: {
         // `shutdownThenExit` awaits `speech.shutdown()` to full completion
@@ -149,6 +132,13 @@ let stdinThread = Thread {
 }
 stdinThread.start()
 
-let keyTap = KeyTap()
-keyTap.start()
+// `start()` returns false without Accessibility permission. There's no "start tap" request in
+// the protocol for the brain to retry with, so the engine retries on its own, once a second,
+// until the tap is up — e.g. once the user grants Accessibility in System Settings.
+func startKeyTapRetrying() {
+    guard !keyTap.start() else { return }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 1) { startKeyTapRetrying() }
+}
+startKeyTapRetrying()
+
 RunLoop.main.run()
