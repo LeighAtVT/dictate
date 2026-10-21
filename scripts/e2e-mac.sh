@@ -234,7 +234,7 @@ doc_in_front() {
 bring_document_to_front() {
   for _ in $(seq 10); do
     open -a TextEdit "$WORK/$DOC"
-    textedit_ui 'set frontmost to true' "perform action \"AXRaise\" of ($(window_of "$DOC"))" >/dev/null
+    textedit_ui 'set frontmost to true' "perform action \"AXRaise\" of ($(window_of "$DOC"))" >/dev/null || true
     sleep 0.5
     doc_in_front && return 0
   done
@@ -251,7 +251,8 @@ dictate_into_document() {
   doc_in_front || fail "$DOC isn't the front window ($FOCUS is), so the paste would land elsewhere"
   "$TOOLS/press-fn" 1.5
   # The paste comes after transcription (under a second); if focus moved while Fn was held,
-  # kill the app at once so it can't paste into whatever is in front now.
+  # kill the app at once. This narrows the window but can't close it: focus that moves after
+  # this check and before the paste (a fraction of a second) isn't caught.
   if ! doc_in_front; then
     pkill -9 -f "$APP/Contents/MacOS/" || true
     fail "focus moved to $FOCUS while Fn was held; stopped Dictate Preview before it could paste"
@@ -302,6 +303,7 @@ STARTS=$(log_since "$RUN_START" | grep "recording started .* after key down" || 
 [ -n "$STARTS" ] || fail "no 'recording started … after key down' lines in $LOG"
 sed 's/^/e2e: log: /' <<<"$STARTS"
 HOPS=$(sed -n 's/.*key down to request \([0-9.]*\) ms.*/\1/p' <<<"$STARTS")
+[ "$(wc -w <<<"$HOPS")" -ge 2 ] || fail "expected a key-down hop for each pass, got: '$HOPS'"
 for hop in $HOPS; do
   awk -v h="$hop" -v limit="$GAP_LIMIT_MS" 'BEGIN { exit !(h < limit) }' ||
     fail "key down to the startRecording request took $hop ms (limit $GAP_LIMIT_MS ms)"
