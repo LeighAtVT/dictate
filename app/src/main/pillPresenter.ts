@@ -5,6 +5,7 @@
 // engine is down the pill says "Reconnecting…" until it's back (spec section 4).
 import type { DictationMode } from './core/modes'
 import type { PipelineState } from './core/pipeline'
+import { hotkeyShortName } from '../shared/hotkeys'
 
 /** The window side of the pill (pill.ts), or a fake in tests. */
 export interface PillSurface {
@@ -17,20 +18,7 @@ export const RESTART_FADE_SECONDS = 3
 export const RESTART_NOTICE = 'Dictate restarted after an unexpected stop'
 export const RECONNECTING = 'Reconnecting…'
 
-const SHORT_NAMES: Record<string, string> = {
-  fn: 'Fn',
-  rightOption: 'Right Option',
-  rightCommand: 'Right Command',
-  rightControl: 'Right Control',
-  rightShift: 'Right Shift',
-  leftOption: 'Left Option',
-  leftControl: 'Left Control'
-}
-
-/** v1's `Hotkey.shortName`, from the settings' raw hotkey value. */
-export function hotkeyShortName(raw: string): string {
-  return SHORT_NAMES[raw] ?? SHORT_NAMES.fn
-}
+export { hotkeyShortName }
 
 /** v1's `modeLabel`: what the pill says instead of "Listening…" for edit and note. */
 export function modeLabel(mode: DictationMode): string | null {

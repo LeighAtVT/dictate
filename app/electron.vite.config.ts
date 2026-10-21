@@ -8,24 +8,21 @@ export default defineConfig({
     build: {
       rollupOptions: {
         input: {
+          // Settings and Onboarding share this one; both are sandboxed, so neither preload may
+          // require anything but 'electron' (no packages).
           index: resolve('src/preload/index.ts'),
-          // The pill's own preload: sandboxed, so it may only require 'electron' (no packages).
           pill: resolve('src/preload/pill.ts')
         }
       }
     }
   },
   renderer: {
-    resolve: {
-      alias: {
-        '@renderer': resolve('src/renderer/src')
-      }
-    },
     plugins: [react()],
     build: {
       rollupOptions: {
         input: {
-          index: resolve('src/renderer/index.html'),
+          settings: resolve('src/renderer/settings/index.html'),
+          onboarding: resolve('src/renderer/onboarding/index.html'),
           pill: resolve('src/renderer/pill/index.html')
         }
       }

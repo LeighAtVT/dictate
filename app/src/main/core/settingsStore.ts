@@ -3,30 +3,9 @@
 import { EventEmitter } from 'node:events'
 import fs from 'node:fs'
 import { atomicWrite } from './atomicWrite'
-import { CLEANUP_PRESETS, EDIT_PRESETS, type ModelChoice } from './modelCatalog'
-import type { Style } from './styleRouter'
+import { defaultSettings, type Settings } from './settings'
 
-export interface Settings {
-  hotkey: string
-  overrides: Record<string, Style>
-  cleanupModel: ModelChoice
-  editModel: ModelChoice
-  spokenLanguage: string
-  pasteLanguage: string
-  keepHistory: boolean
-}
-
-export function defaultSettings(): Settings {
-  return {
-    hotkey: 'fn',
-    overrides: {},
-    cleanupModel: CLEANUP_PRESETS[0].choice,
-    editModel: EDIT_PRESETS[0].choice,
-    spokenLanguage: 'en',
-    pasteLanguage: 'same',
-    keepHistory: true
-  }
-}
+export { defaultSettings, type Settings } from './settings'
 
 export declare interface SettingsStore {
   on(event: 'change', listener: (settings: Settings, changed: (keyof Settings)[]) => void): this

@@ -1,13 +1,14 @@
 // Dictate v2: the composition root. Wires the engine (engine.ts) to the hotkey controller and the
 // pipeline (core/), and the pipeline to the pill (pill.ts, pillPresenter.ts) and the menu-bar item
-// (tray.ts, trayModel.ts), the way v1's `AppDelegate.applicationDidFinishLaunching` does
+// (tray.ts, trayModel.ts), and the Settings and Onboarding windows (windows.ts) to their API
+// (ipc.ts), the way v1's `AppDelegate.applicationDidFinishLaunching` does
 // (Sources/DictateApp/AppDelegate.swift). Logic lives in those modules; this file only connects
 // them. Never log dictated text, the API key, or request bodies here.
-import { app, powerMonitor } from 'electron'
+import { app, ipcMain, powerMonitor, shell } from 'electron'
 import fs from 'node:fs'
 import { join } from 'node:path'
 import { EventLog } from './core/eventLog'
-import { loadShortcuts, loadVocabulary } from './core/fileStores'
+import { loadShortcuts, loadVocabulary, saveShortcuts, saveVocabulary } from './core/fileStores'
 import { History } from './core/history'
 import { HotkeyController } from './core/hotkeyController'
 import { NoteSaver } from './core/noteSaver'
@@ -16,12 +17,15 @@ import { Polisher } from './core/polisher'
 import { RunJournal } from './core/runJournal'
 import { SettingsStore } from './core/settingsStore'
 import { Engine } from './engine'
+import { createHandlers, distinctBundleIDs, registerIpc } from './ipc'
+import { SETTINGS_CHANGED } from '../shared/dictate'
 import { AppStatus, outcomeLogLine } from './appStatus'
 import { PillWindow } from './pill'
 import { PillPresenter } from './pillPresenter'
 import { TrayController } from './tray'
 import { phaseAfter, trayIcon, type DictationPhase } from './trayModel'
 import { variantFor } from './variant'
+import { AppWindows } from './windows'
 
 const variant = variantFor(app.getName(), app.getPath('home'))
 // Before `ready` and before the single-instance lock (which lives in userData): Electron's own
@@ -138,13 +142,46 @@ function start(): void {
   const pill = new PillPresenter(new PillWindow(record), () => settings.get().hotkey)
   controller.onModeChange = (mode) => pill.modeChanged(mode, pipeline.isListening)
 
-  const openOnboarding = (): void => {
-    // Ruling R17: the Onboarding window arrives in Task 12; this is its seam.
-    record('onboarding requested (window arrives in Task 12)')
-  }
-  const openSettings = (): void => {
-    record('settings requested (window arrives in Task 12)')
-  }
+  // --- Settings and Onboarding windows, and their window.dictate API (ipc.ts) ----------------
+  const windows = new AppWindows(variant.name, record)
+  const openOnboarding = (): void => windows.openOnboarding()
+  const openSettings = (): void => windows.openSettings()
+  registerIpc(
+    ipcMain,
+    createHandlers({
+      settings,
+      // Ruling R22: only this app's own Keychain item; the key never goes back to a window.
+      saveKey: async (key) => {
+        await engine.request({ op: 'secret.set', value: key })
+        apiKey = key
+      },
+      removeKey: async () => {
+        await engine.request({ op: 'secret.delete' })
+        apiKey = null
+      },
+      hasKey: async () => {
+        await refreshKey()
+        return apiKey !== null && apiKey.length > 0
+      },
+      // v1: makePolisher().check(choice). An unsaved key (Onboarding) is tested without saving it.
+      testModel: async (choice, key) => {
+        if (key === null) await refreshKey()
+        return new Polisher({ fetch, apiKey: () => key ?? apiKey, model: choice }).check(choice)
+      },
+      vocabulary: { get: () => loadVocabulary(vocabularyFile), set: (terms) => saveVocabulary(vocabularyFile, terms) },
+      shortcuts: { get: () => loadShortcuts(shortcutsFile), set: (list) => saveShortcuts(shortcutsFile, list) },
+      knownApps: () => distinctBundleIDs(history.recent()),
+      permissions: () => engine.request({ op: 'permissions' }),
+      requestPermission: async (name) => {
+        await engine.request({ op: 'requestPermission', name })
+      },
+      clearHistory: () => history.clear(),
+      openKeyboardSettings: () => {
+        void shell.openExternal('x-apple.systempreferences:com.apple.Keyboard-Settings.extension')
+      }
+    }),
+    (sender) => windows.owns(sender)
+  )
 
   const iconDir = app.isPackaged ? join(process.resourcesPath, 'tray') : join(app.getAppPath(), 'resources', 'tray')
   const tray = new TrayController(
@@ -233,6 +270,7 @@ function start(): void {
   engine.request({ op: 'setHotkey', key: settings.get().hotkey }).catch(() => {})
 
   settings.on('change', (s, changed) => {
+    windows.broadcast(SETTINGS_CHANGED, s)
     if (changed.includes('cleanupModel') || changed.includes('editModel')) polisher = makePolisher()
     if (changed.includes('hotkey')) {
       controller.reset()
@@ -266,8 +304,11 @@ function start(): void {
     setTimeout(() => pill.restartNotice(), 1000)
   }
 
-  // v1's applicationShouldHandleReopen: opening Dictate again shows its window.
-  app.on('second-instance', () => (status.permissionsOK ? openSettings() : openOnboarding()))
+  // v1's applicationShouldHandleReopen: opening Dictate again shows its window. A second launch
+  // arrives as 'second-instance'; opening the running app (Finder, `open -a`) as 'activate'.
+  const reopen = (): void => (status.permissionsOK ? openSettings() : openOnboarding())
+  app.on('second-instance', reopen)
+  app.on('activate', reopen)
 
   app.on('before-quit', (event) => {
     if (quitting) return
