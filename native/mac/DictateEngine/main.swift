@@ -54,7 +54,35 @@ let speech = Speech(
     emit: { event in writeLine(encodeLine(event)) }
 )
 
-let keyTap = KeyTap(hotkey: .default, emit: { event in writeLine(encodeLine(event)) })
+#if DICTATE_E2E
+// Task 11 (ruling R3): `--e2e` builds only. The brain passes this from env DICTATE_TEST_AUDIO;
+// `stopRecording` then transcribes that file instead of the microphone. The path isn't logged.
+if let testAudio = argumentValue("--test-audio", in: arguments) {
+    speech.testAudioURL = URL(fileURLWithPath: testAudio)
+    writeLine(encodeLine(EngineEvent.log(message: "e2e build: test audio replaces the microphone")))
+}
+#endif
+
+/// Task 11 (Review Focus 1): when the talk key last went down, by the monotonic clock, so
+/// `startRecording` can log how long the key-down → brain → `startRecording` round trip plus the
+/// microphone start took. Written on the main thread (tap callback), read from a request `Task`.
+private final class KeyDownClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var at: UInt64?
+    func mark() { lock.withLock { at = DispatchTime.now().uptimeNanoseconds } }
+    /// The last key-down time, cleared so a later recording can't reuse it.
+    func take() -> UInt64? { lock.withLock { defer { at = nil }; return at } }
+}
+private let keyDownClock = KeyDownClock()
+
+private let milliseconds: @Sendable (UInt64, UInt64) -> String = { from, to in
+    String(format: "%.1f", Double(to &- from) / 1_000_000)
+}
+
+let keyTap = KeyTap(hotkey: .default, emit: { event in
+    if case .key(down: true, _) = event { keyDownClock.mark() }
+    writeLine(encodeLine(event))
+})
 
 // Same wiring as v1's `Sources/DictateApp/AppDelegate.swift` (`inserter`/`pipeline`'s `selection`).
 let frontmostContext = FrontmostContext()
@@ -70,7 +98,17 @@ let desktop = Desktop(
 
 let handlers = Handlers(
     startRecording: {
+        let requested = DispatchTime.now().uptimeNanoseconds
         try speech.start()
+        let started = DispatchTime.now().uptimeNanoseconds
+        let micStart = milliseconds(requested, started)
+        if let keyDown = keyDownClock.take() {
+            writeLine(encodeLine(EngineEvent.log(message:
+                "recording started \(milliseconds(keyDown, started)) ms after key down "
+                + "(key down to request \(milliseconds(keyDown, requested)) ms, mic start \(micStart) ms)")))
+        } else {
+            writeLine(encodeLine(EngineEvent.log(message: "recording started (mic start \(micStart) ms)")))
+        }
         return [:]
     },
     cancelRecording: {

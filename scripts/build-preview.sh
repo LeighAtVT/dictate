@@ -1,18 +1,35 @@
 #!/bin/bash
 # Build Dictate Preview.app (the v2 Electron shell) plus its signed Swift engine,
 # sign everything with the same local identity v1 uses, install to /Applications
-# and launch. Spike only (Task 1 of the Dictate v2 Mac Preview plan); later tasks
+# and launch. Started in Task 1 of the Dictate v2 Mac Preview plan; later tasks
 # extend this script rather than replacing it.
+#
+#   scripts/build-preview.sh          release build, installed and opened
+#   scripts/build-preview.sh --e2e    adds the engine's test-audio hook (-D DICTATE_E2E, see
+#                                     native/mac/EngineKit/Speech.swift) in its own build folder,
+#                                     installs, and doesn't open: scripts/e2e-mac.sh launches it
 set -euo pipefail
 cd "$(dirname "$0")/.."
+
+E2E=0
+for arg in "$@"; do
+  case "$arg" in
+    --e2e) E2E=1 ;;
+    *) echo "usage: $0 [--e2e]" >&2; exit 2 ;;
+  esac
+done
 
 IDENTITY="Dictate Local Signing"
 APP_NAME="Dictate Preview.app"
 INSTALLED="/Applications/$APP_NAME"
 
 # --- Engine (Swift, release) --------------------------------------------
-swift build -c release --product dictate-engine
-BIN=$(swift build -c release --show-bin-path)
+# The e2e build gets its own scratch folder so switching between the two never mixes objects
+# built with and without -D DICTATE_E2E. Release builds never contain the test-audio code.
+SWIFT_FLAGS=(-c release)
+if [ "$E2E" = 1 ]; then SWIFT_FLAGS+=(--scratch-path .build/e2e -Xswiftc -DDICTATE_E2E); fi
+swift build "${SWIFT_FLAGS[@]}" --product dictate-engine
+BIN=$(swift build "${SWIFT_FLAGS[@]}" --show-bin-path)
 
 # --- App shell (Electron, --dir packaging, unsigned by electron-builder) -
 cd app
@@ -47,8 +64,16 @@ codesign --verify --deep --strict "$APP"
 
 # --- Install -------------------------------------------------------------
 osascript -e 'tell application id "com.leigh.dictate.preview" to quit' 2>/dev/null || true
-sleep 1
+# Quitting waits for the engine to unload the speech model, so give it up to 10 s to be gone.
+for _ in $(seq 20); do
+  pgrep -f "$INSTALLED/Contents/MacOS/" >/dev/null || break
+  sleep 0.5
+done
 rm -rf "$INSTALLED"
 cp -R "$APP" "$INSTALLED"
-open "$INSTALLED"
-echo "Installed $INSTALLED"
+if [ "$E2E" = 1 ]; then
+  echo "Installed $INSTALLED (e2e build, not opened)"
+else
+  open "$INSTALLED"
+  echo "Installed $INSTALLED"
+fi

@@ -1,5 +1,8 @@
 import DictateCore
 import Foundation
+#if DICTATE_E2E
+@preconcurrency import AVFoundation
+#endif
 
 // Dictate v2, Task 3: the engine's speech pipeline — record, gate out
 // silence, warm the Whisper model, and transcribe. Mirrors the shape of v1's
@@ -26,6 +29,32 @@ public final class Speech: @unchecked Sendable {
 
     private let lock = NSLock()
     private var transcriber: Transcribing?
+
+    #if DICTATE_E2E
+    /// End-to-end test hook (Task 11, ruling R3): when set, `stop()` transcribes this WAV file's
+    /// samples instead of what the microphone heard. The microphone still starts and stops as
+    /// usual, so recording timing stays real. Compiled only into `--e2e` builds
+    /// (`-D DICTATE_E2E`, `scripts/build-preview.sh --e2e`); release builds don't contain it.
+    public var testAudioURL: URL? {
+        get { lock.withLock { _testAudioURL } }
+        set { lock.withLock { _testAudioURL = newValue } }
+    }
+    private var _testAudioURL: URL?
+
+    /// 16 kHz mono Float32 samples from a WAV file, the format `AudioRecorder` produces.
+    static func loadTestAudio(_ url: URL) throws -> [Float] {
+        let file = try AVAudioFile(forReading: url, commonFormat: .pcmFormatFloat32, interleaved: false)
+        guard file.processingFormat.sampleRate == AudioRecorder.sampleRate, file.processingFormat.channelCount == 1 else {
+            throw SpeechError(description: "test audio must be 16 kHz mono")
+        }
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(file.length)) else {
+            throw SpeechError(description: "test audio buffer")
+        }
+        try file.read(into: buffer)
+        guard let channel = buffer.floatChannelData?[0] else { throw SpeechError(description: "test audio has no samples") }
+        return Array(UnsafeBufferPointer(start: channel, count: Int(buffer.frameLength)))
+    }
+    #endif
 
     public init(
         recorder: Recording,
@@ -92,7 +121,12 @@ public final class Speech: @unchecked Sendable {
     /// before the model-readiness check, so a silent buffer returns
     /// `noSpeech` even if the model is still loading.
     public func stop(language: String, vocabulary: [String]) async throws -> (result: String, text: String?, seconds: Double) {
-        let samples = recorder.stop()
+        let recorded = recorder.stop()
+        #if DICTATE_E2E
+        let samples = try testAudioURL.map { try Self.loadTestAudio($0) } ?? recorded
+        #else
+        let samples = recorded
+        #endif
         guard SpeechGate.hasSpeech(samples) else {
             return (result: "noSpeech", text: nil, seconds: 0)
         }

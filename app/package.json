@@ -1,5 +1,6 @@
 {
   "name": "dictate-preview",
+  "productName": "Dictate Preview",
   "version": "0.0.1",
   "private": true,
   "description": "Dictate v2 Electron shell (Mac preview spike)",
