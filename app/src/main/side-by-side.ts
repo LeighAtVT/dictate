@@ -133,9 +133,11 @@ export async function pauseV1(deps: {
   const service = `gui/${deps.uid}/${V1_AGENT_LABEL}`
   if ((await deps.exec(LAUNCHCTL, ['disable', service])).code !== 0) return { ok: false, failed: 'disable' }
   if (await isV1Running(deps.exec)) {
-    await deps.exec(OSASCRIPT, ['-e', QUIT_V1])
-    const deadline = deps.now() + QUIT_WAIT_MS
-    while (deps.now() < deadline && (await isV1Running(deps.exec))) await deps.sleep(QUIT_POLL_MS)
+    // Refused (Automation) or failed: nothing will quit v1, so don't wait for it.
+    if ((await deps.exec(OSASCRIPT, ['-e', QUIT_V1])).code === 0) {
+      const deadline = deps.now() + QUIT_WAIT_MS
+      while (deps.now() < deadline && (await isV1Running(deps.exec))) await deps.sleep(QUIT_POLL_MS)
+    }
   }
   // Fails harmlessly when the agent isn't loaded (already booted out, or v1 opened by hand).
   await deps.exec(LAUNCHCTL, ['bootout', service])

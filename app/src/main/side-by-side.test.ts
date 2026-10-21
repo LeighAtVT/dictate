@@ -74,11 +74,12 @@ describe('pauseV1 (Ruling R31: quit v1 cleanly, then boot out)', () => {
     expect(calls.at(-1)).toBe(BOOTOUT)
   })
 
-  it('boots out anyway when osascript fails or is refused', async () => {
+  it('boots out straight away, without the 5 s wait, when osascript fails or is refused', async () => {
     const { exec, calls } = fakeExec((file) => ({ code: file === OSASCRIPT ? 1 : 0 }))
     const t = clock()
     expect(await pauseV1({ exec, uid: UID, sleep: t.sleep, now: t.now })).toEqual({ ok: true })
-    expect(calls.at(-1)).toBe(BOOTOUT)
+    expect(calls.slice(3)).toEqual([BOOTOUT])
+    expect(t.c.now).toBe(0)
   })
 
   it("doesn't run osascript or wait when v1 isn't running", async () => {
