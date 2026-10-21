@@ -56,8 +56,9 @@ private enum FixturesLoader {
             Issue.record("expected .paste, got \(request)")
             return
         }
-        let expected = "Line one\nLine two — \u{201C}quoted\u{201D} \u{1F399}\u{FE0F}   end"
+        let expected = "Line one\nLine two — \u{201C}quoted\u{201D} \u{1F399}\u{FE0F} \u{2028} end"
         #expect(text == expected)
+        #expect(text.contains("\u{2028}"))
 
         // Round-trip back through the wire: re-encode the decoded text as a
         // paste request and decode it again, byte for byte.

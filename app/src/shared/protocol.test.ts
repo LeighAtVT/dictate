@@ -52,7 +52,8 @@ describe('protocol fixtures', () => {
     const pasteFixture = fixtures.find((f) => f.kind === 'request' && f.op === 'paste')
     expect(pasteFixture).toBeDefined()
     const parsed = JSON.parse(pasteFixture!.line)
-    expect(parsed.text).toBe('Line one\nLine two — “quoted” 🎙️   end')
+    expect(parsed.text).toBe('Line one\nLine two — “quoted” 🎙️   end')
+    expect(parsed.text).toContain(' ')
   })
 
   for (const fixture of fixtures) {
