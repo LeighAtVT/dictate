@@ -58,6 +58,22 @@ interface Pending {
   timer?: ReturnType<typeof setTimeout>
 }
 
+/**
+ * Buffers a stream's chunks and calls `onLine` for each complete,
+ * newline-delimited line; a partial trailing line is held in `state.buffer`
+ * until the rest of it arrives in a later chunk. Shared by stdout and
+ * stderr handling, which differ only in what `onLine` does with a line.
+ */
+function feedLines(state: { buffer: string }, chunk: Buffer, onLine: (line: string) => void): void {
+  state.buffer += chunk.toString('utf8')
+  let newlineAt: number
+  while ((newlineAt = state.buffer.indexOf('\n')) >= 0) {
+    const line = state.buffer.slice(0, newlineAt)
+    state.buffer = state.buffer.slice(newlineAt + 1)
+    onLine(line)
+  }
+}
+
 export declare interface Engine {
   on(event: 'event', listener: (ev: EngineEvent) => void): this
   on(event: 'down', listener: () => void): this
@@ -79,8 +95,8 @@ export class Engine extends EventEmitter {
   private stopping = false
   private nextId = 1
   private readonly pending = new Map<number, Pending>()
-  private stdoutBuffer = ''
-  private stderrBuffer = ''
+  private readonly stdoutState = { buffer: '' }
+  private readonly stderrState = { buffer: '' }
   private crashTimestamps: number[] = []
   private lastHotkey: string | null = null
 
@@ -99,8 +115,8 @@ export class Engine extends EventEmitter {
 
     const child = spawn(this.command, this.args, { stdio: ['pipe', 'pipe', 'pipe'] })
     this.child = child
-    this.stdoutBuffer = ''
-    this.stderrBuffer = ''
+    this.stdoutState.buffer = ''
+    this.stderrState.buffer = ''
 
     child.stdout.on('data', (chunk: Buffer) => this.onStdoutData(chunk))
     child.stderr.on('data', (chunk: Buffer) => this.onStderrData(chunk))
@@ -200,23 +216,15 @@ export class Engine extends EventEmitter {
   }
 
   private onStdoutData(chunk: Buffer): void {
-    this.stdoutBuffer += chunk.toString('utf8')
-    let newlineAt: number
-    while ((newlineAt = this.stdoutBuffer.indexOf('\n')) >= 0) {
-      const line = this.stdoutBuffer.slice(0, newlineAt)
-      this.stdoutBuffer = this.stdoutBuffer.slice(newlineAt + 1)
-      this.handleLine(line)
-    }
+    feedLines(this.stdoutState, chunk, (line) => this.handleLine(line))
   }
 
   private onStderrData(chunk: Buffer): void {
-    this.stderrBuffer += chunk.toString('utf8')
-    let newlineAt: number
-    while ((newlineAt = this.stderrBuffer.indexOf('\n')) >= 0) {
-      const line = this.stderrBuffer.slice(0, newlineAt)
-      this.stderrBuffer = this.stderrBuffer.slice(newlineAt + 1)
-      if (line.length > 0) this.emit('event', { event: 'log', message: line } satisfies EngineEvent)
-    }
+    feedLines(this.stderrState, chunk, (line) => this.handleStderrLine(line))
+  }
+
+  private handleStderrLine(line: string): void {
+    if (line.length > 0) this.emit('event', { event: 'log', message: line } satisfies EngineEvent)
   }
 
   private handleLine(line: string): void {

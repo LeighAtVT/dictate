@@ -30,6 +30,12 @@
 //                  <raw> need not be valid JSON -- this is also how tests
 //                  produce a malformed line to prove Engine ignores it
 //                  instead of throwing.
+//   stderr:<text>  At startup, write <text> + a trailing newline to stderr,
+//                  split across two separate writes (first half, then --
+//                  after a setImmediate tick -- the second half plus the
+//                  newline). Proves Engine forwards stderr lines as
+//                  {event:'log', message} and that it buffers a stderr
+//                  chunk split across writes the same way it does stdout.
 //
 // Every request received is also reported as a `{event:'log',
 // message:'recv:<op>'}` line before any op-specific handling, so a test can
@@ -55,6 +61,7 @@ const script = (process.env.FAKE_SCRIPT ?? '')
 const crashOn = new Set()
 const hangOn = new Set()
 const startupEmits = []
+const startupStderr = []
 let echo = false
 
 for (const entry of script) {
@@ -66,6 +73,8 @@ for (const entry of script) {
     hangOn.add(entry.slice('hang-on:'.length))
   } else if (entry.startsWith('emit:')) {
     startupEmits.push(entry.slice('emit:'.length))
+  } else if (entry.startsWith('stderr:')) {
+    startupStderr.push(entry.slice('stderr:'.length))
   }
 }
 
@@ -74,6 +83,16 @@ function writeLine(line) {
 }
 
 for (const raw of startupEmits) writeLine(raw)
+
+for (const text of startupStderr) {
+  // Split into two writes so the parent sees it as (at least) two 'data'
+  // events on its side of the pipe, exercising Engine's stderr buffering.
+  const mid = Math.max(1, Math.ceil(text.length / 2))
+  process.stderr.write(text.slice(0, mid))
+  setImmediate(() => {
+    process.stderr.write(`${text.slice(mid)}\n`)
+  })
+}
 
 function defaultReply(op) {
   switch (op) {

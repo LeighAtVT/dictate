@@ -172,4 +172,21 @@ describe('Engine', () => {
 
     expect(events).toEqual([{ event: 'escape' }])
   })
+
+  it('forwards a stderr line (split across two writes) as an event log', async () => {
+    const engine = makeEngine('stderr:boom, something went wrong')
+    const events: EngineEvent[] = []
+    engine.on('event', (e) => events.push(e))
+    engine.start()
+
+    await new Promise<void>((resolve) => {
+      const check = (): void => {
+        if (events.some((e) => e.event === 'log')) resolve()
+        else setTimeout(check, 10)
+      }
+      check()
+    })
+
+    expect(events).toEqual([{ event: 'log', message: 'boom, something went wrong' }])
+  })
 })
