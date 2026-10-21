@@ -20,10 +20,11 @@
 // already queued -- see Pipeline.acceptsBegin) must not let the controller
 // think a recording started anyway. For the toggle path that would leave
 // `toggleMode` set forever, since only a matching `shortcut`/`escape` clears
-// it -- and while it's set, every `key`/`otherKey` event is thrown away
-// (:70/:79), so the hold-to-talk key would go dead with no sign why. For the
-// hold path, `holdActive`/`modes.begin`/`onModeChange` must likewise not
-// reflect a begin that never actually happened.
+// it -- and while it's set, every `key`/`otherKey` event is thrown away in
+// `onEvent`'s `key`/`otherKey` cases, so the hold-to-talk key would go dead
+// with no sign why. For the hold path, `holdActive`/`modes.begin`/
+// `onModeChange` must likewise not reflect a begin that never actually
+// happened.
 //
 // Review round 3 (ruling R12): R11's hold-path fix left `holdActive` false
 // on a dropped begin, but `HotkeyStateMachine` isn't gated on `canBegin` at
@@ -58,11 +59,10 @@
 // Review round 4 (ruling R14a): a toggle started by `handleShortcut` while the hold-to-talk key
 // is still physically down (its begin having just been refused, leaving the machine in
 // `cancelled`) left the machine stuck: `cancelled` only reacts to `keyUp`, but the key's eventual
-// release arrives while the toggle owns the key path, so `onEvent`'s `key` case throws it away
-// (`:118`) -- the machine never reaches `idle`, and the first real press after the toggle ends is
-// eaten. `handleShortcut` now resets the machine when it starts a toggle; that's safe because a
-// toggle can only start while `holdActive` is false, so the hold path owns no live recording to
-// disrupt.
+// release arrives while the toggle owns the key path, so `onEvent`'s `key` case throws it away --
+// the machine never reaches `idle`, and the first real press after the toggle ends is eaten.
+// `handleShortcut` now resets the machine when it starts a toggle; that's safe because a toggle
+// can only start while `holdActive` is false, so the hold path owns no live recording to disrupt.
 import type { EngineEvent, Modifier, ModeAction } from '../../shared/protocol'
 import { HotkeyStateMachine, type HotkeyAction, type HotkeyEvent } from './hotkeyStateMachine'
 import { ModeTracker, type DictationMode } from './modes'
@@ -117,8 +117,10 @@ export class HotkeyController {
    * without ever starting a recording -- secure input, the model still loading, a dead mic -- and
    * to null when a recording actually started. A generation counter guards against acting on a
    * stale begin: only the most recently sent `beginRecording`'s resolution can clear
-   * `toggleMode`/`holdActive`. A rejection is swallowed -- `onAction` shouldn't reject, but this
-   * must never surface as an unhandled rejection either way.
+   * `toggleMode`/`holdActive`, and (review round 5, Minor 2) reset the state machine, since the
+   * failed begin's own hold/tap/lock cycle (if any) is stuck with nothing behind it either. A
+   * rejection is swallowed -- `onAction` shouldn't reject, but this must never surface as an
+   * unhandled rejection either way.
    */
   private sendAction(action: HotkeyAction, mode: DictationMode): void {
     if (action !== 'beginRecording') {
@@ -133,9 +135,15 @@ export class HotkeyController {
           if (generation !== this.beginGeneration) return // a newer begin has since been sent
           if (outcome != null) {
             // Accepted but never actually started recording -- free whichever path sent it, so
-            // the talk key and the shortcut toggle both work again.
+            // the talk key and the shortcut toggle both work again. Review round 5 (Minor 2): also
+            // reset the machine -- a hold begin that failed after a double-tap lock (or any other
+            // mid-cycle state) would otherwise leave it stuck there, eating the next press the same
+            // way an unresolved R14a/R12 cycle would. Safe for the same reason as the R14a reset in
+            // handleShortcut: this only runs for the latest begin, which this method's own doc
+            // comment establishes holds no live recording at this point.
             this.toggleMode = null
             this.holdActive = false
+            this.machine = new HotkeyStateMachine()
           }
         },
         () => {} // onAction shouldn't reject, but never let that become an unhandled rejection
@@ -212,8 +220,8 @@ export class HotkeyController {
     if (this.toggleMode === null) {
       // Review round 2 (R11): if the pipeline would just drop this begin, don't set toggleMode
       // at all -- otherwise it stays set forever (only a matching shortcut/escape clears it),
-      // and every key/otherKey event gets thrown away in the meantime (:70/:79), killing the
-      // hold-to-talk key with no sign why.
+      // and every key/otherKey event gets thrown away in the meantime (see onEvent's key/otherKey
+      // cases), killing the hold-to-talk key with no sign why.
       if (!this.canBegin()) return
       // Review round 4 (R14a): a hold's refused begin can leave the machine stuck in `cancelled`,
       // which only clears on that key's keyUp -- but once this toggle starts, the key path is
