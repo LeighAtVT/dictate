@@ -56,6 +56,19 @@ describe('Onboarding', () => {
     expect(screen.getByText('All set. You can close this window.')).toBeTruthy()
   })
 
+  it('"Skip for now" leaves the key unsaved and goes to All set (dictation pastes without cleanup)', async () => {
+    const api = fakeApi({ hasKey: false, permissions: granted })
+    render(<App api={api as unknown as DictateApi} />)
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: 'Skip for now' }))
+
+    expect(screen.getByText('All set. You can close this window.')).toBeTruthy()
+    expect(screen.getByText('Skipped. Add a key any time in Settings → Polish.')).toBeTruthy()
+    expect(screen.queryByLabelText('OpenRouter key')).toBeNull()
+    expect(api.testModel).not.toHaveBeenCalled()
+    expect(api.saveKey).not.toHaveBeenCalled()
+  })
+
   it('does not save a key whose test fails', async () => {
     const api = fakeApi({ hasKey: false, permissions: granted, test: { failed: 'No auth credentials found' } })
     render(<App api={api as unknown as DictateApi} />)

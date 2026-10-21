@@ -1,11 +1,13 @@
 // Dictate v2, Task 12: the Onboarding window's logic, kept out of App.tsx so it can be tested.
 // v1's two permission rows (Sources/DictateApp/OnboardingView.swift), then the new third step,
 // "Paste your OpenRouter key". That step is skipped when this app already has a key (one imported
-// from v1, say), and a typed key is saved only once a test call with it works. Pure.
+// from v1, say), and a typed key is saved only once a test call with it works. "Skip for now"
+// keeps v1's two-step setup: without a key, dictation still works and pastes without cleanup. Pure.
 import { DEFAULT_CLEANUP } from '../../main/core/modelCatalog'
 import type { DictateApi } from '../../shared/dictate'
 
 export type StepId = 'microphone' | 'accessibility' | 'key'
+export type StepState = 'todo' | 'done' | 'skipped'
 
 export interface OnboardingState {
   microphone: boolean
@@ -14,20 +16,24 @@ export interface OnboardingState {
   hadKey: boolean | null
   /** A key was tested and saved in this window. */
   keySaved: boolean
+  /** "Skip for now" was pressed. */
+  keySkipped: boolean
 }
 
-export function onboardingSteps(s: OnboardingState): { id: StepId; done: boolean }[] {
-  const steps: { id: StepId; done: boolean }[] = [
-    { id: 'microphone', done: s.microphone },
-    { id: 'accessibility', done: s.accessibility }
+export function onboardingSteps(s: OnboardingState): { id: StepId; state: StepState }[] {
+  const steps: { id: StepId; state: StepState }[] = [
+    { id: 'microphone', state: s.microphone ? 'done' : 'todo' },
+    { id: 'accessibility', state: s.accessibility ? 'done' : 'todo' }
   ]
-  if (s.hadKey === false) steps.push({ id: 'key', done: s.keySaved })
+  if (s.hadKey === false) {
+    steps.push({ id: 'key', state: s.keySaved ? 'done' : s.keySkipped ? 'skipped' : 'todo' })
+  }
   return steps
 }
 
-/** v1's "All set" line, which now also waits for the key. */
+/** v1's "All set" line: both permissions, and the key step done or skipped. */
 export function allSet(s: OnboardingState): boolean {
-  return s.microphone && s.accessibility && (s.hadKey === true || s.keySaved)
+  return s.microphone && s.accessibility && (s.hadKey === true || s.keySaved || s.keySkipped)
 }
 
 /** Tests `input` on the default cleanup model and saves it only if that works. */

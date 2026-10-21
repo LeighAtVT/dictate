@@ -4,18 +4,26 @@
 import { useEffect, useState } from 'react'
 import type { DictateApi, Permissions } from '../../shared/dictate'
 import { hotkeyShortName } from '../../shared/hotkeys'
-import { allSet, onboardingSteps, testAndSaveKey, type OnboardingState, type StepId } from './steps'
+import { allSet, onboardingSteps, testAndSaveKey, type OnboardingState, type StepId, type StepState } from './steps'
 
-function Step(props: { done: boolean; title: string; detail: string; children?: React.ReactNode }): React.JSX.Element {
+const MARKS: Record<StepState, { mark: string; className: string; label: string }> = {
+  todo: { mark: '○', className: 'secondary', label: 'Not done' },
+  done: { mark: '✓', className: 'green', label: 'Done' },
+  skipped: { mark: '–', className: 'secondary', label: 'Skipped' }
+}
+
+function Step(props: { state: StepState; title: string; detail: string; children?: React.ReactNode }): React.JSX.Element {
+  const mark = MARKS[props.state]
   return (
     <div className="step" role="group" aria-label={props.title}>
-      <span className={`mark ${props.done ? 'green' : 'secondary'}`} aria-label={props.done ? 'Done' : 'Not done'}>
-        {props.done ? '✓' : '○'}
+      <span className={`mark ${mark.className}`} aria-label={mark.label}>
+        {mark.mark}
       </span>
       <div className="body">
         <div className="title">{props.title}</div>
         <div className="callout secondary">{props.detail}</div>
-        {!props.done && props.children}
+        {props.state === 'skipped' && <div className="callout">Skipped. Add a key any time in Settings → Polish.</div>}
+        {props.state === 'todo' && props.children}
       </div>
     </div>
   )
@@ -26,6 +34,7 @@ export function App({ api }: { api: DictateApi }): React.JSX.Element {
   const [hotkey, setHotkey] = useState('fn')
   const [hadKey, setHadKey] = useState<boolean | null>(null)
   const [keySaved, setKeySaved] = useState(false)
+  const [keySkipped, setKeySkipped] = useState(false)
   const [keyInput, setKeyInput] = useState('')
   const [status, setStatus] = useState<string | null>(null)
   const [testing, setTesting] = useState(false)
@@ -50,8 +59,10 @@ export function App({ api }: { api: DictateApi }): React.JSX.Element {
     microphone: permissions?.microphone === 'granted',
     accessibility: permissions?.accessibility === true,
     hadKey,
-    keySaved
+    keySaved,
+    keySkipped
   }
+  const stepState = Object.fromEntries(onboardingSteps(state).map((s) => [s.id, s.state])) as Record<StepId, StepState>
   const key = hotkeyShortName(hotkey)
 
   const testKey = async (): Promise<void> => {
@@ -70,7 +81,7 @@ export function App({ api }: { api: DictateApi }): React.JSX.Element {
   const rows: Record<StepId, React.JSX.Element> = {
     microphone: (
       <Step
-        done={state.microphone}
+        state={stepState.microphone}
         title="Microphone"
         detail="Listens only while you're dictating. Audio never leaves your Mac."
       >
@@ -83,7 +94,7 @@ export function App({ api }: { api: DictateApi }): React.JSX.Element {
     ),
     accessibility: (
       <Step
-        done={state.accessibility}
+        state={stepState.accessibility}
         title="Accessibility"
         detail={`Lets Dictate notice the ${key} key and paste where your cursor is.`}
       >
@@ -96,7 +107,7 @@ export function App({ api }: { api: DictateApi }): React.JSX.Element {
     ),
     key: (
       <Step
-        done={state.keySaved}
+        state={stepState.key ?? 'todo'}
         title="Paste your OpenRouter key"
         detail="Cleans up and translates what you say. Use your own key: Dictate tests it and saves it only once it works. Without one, Dictate pastes what you said, without cleanup."
       >
@@ -113,6 +124,17 @@ export function App({ api }: { api: DictateApi }): React.JSX.Element {
           />
           <button type="button" disabled={testing || keyInput.trim().length === 0} onClick={() => void testKey()}>
             {testing ? 'Testing…' : 'Test'}
+          </button>
+          <button
+            type="button"
+            disabled={testing}
+            onClick={() => {
+              setKeySkipped(true)
+              setKeyInput('')
+              setStatus(null)
+            }}
+          >
+            Skip for now
           </button>
         </div>
       </Step>

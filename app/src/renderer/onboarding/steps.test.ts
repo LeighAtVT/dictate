@@ -3,7 +3,7 @@ import { DEFAULT_CLEANUP } from '../../main/core/modelCatalog'
 import type { TestResult } from '../../shared/dictate'
 import { allSet, onboardingSteps, testAndSaveKey, type OnboardingState } from './steps'
 
-const base: OnboardingState = { microphone: false, accessibility: false, hadKey: false, keySaved: false }
+const base: OnboardingState = { microphone: false, accessibility: false, hadKey: false, keySaved: false, keySkipped: false }
 
 describe('onboardingSteps', () => {
   it('shows the key step third, after the two permissions, when there is no key', () => {
@@ -20,22 +20,30 @@ describe('onboardingSteps', () => {
 
   it('keeps showing the key step, ticked, once a key is saved in this window', () => {
     const steps = onboardingSteps({ ...base, keySaved: true })
-    expect(steps.find((s) => s.id === 'key')).toEqual({ id: 'key', done: true })
+    expect(steps.find((s) => s.id === 'key')).toEqual({ id: 'key', state: 'done' })
+  })
+
+  it('shows the key step as skipped after "Skip for now"', () => {
+    const steps = onboardingSteps({ ...base, keySkipped: true })
+    expect(steps.find((s) => s.id === 'key')).toEqual({ id: 'key', state: 'skipped' })
   })
 
   it('marks each permission done as it is granted', () => {
-    expect(onboardingSteps({ ...base, microphone: true }).map((s) => s.done)).toEqual([true, false, false])
-    expect(onboardingSteps({ ...base, accessibility: true }).map((s) => s.done)).toEqual([false, true, false])
+    expect(onboardingSteps({ ...base, microphone: true }).map((s) => s.state)).toEqual(['done', 'todo', 'todo'])
+    expect(onboardingSteps({ ...base, accessibility: true }).map((s) => s.state)).toEqual(['todo', 'done', 'todo'])
   })
 })
 
 describe('allSet', () => {
-  it('needs both permissions and a key', () => {
-    expect(allSet({ microphone: true, accessibility: true, hadKey: true, keySaved: false })).toBe(true)
-    expect(allSet({ microphone: true, accessibility: true, hadKey: false, keySaved: true })).toBe(true)
-    expect(allSet({ microphone: true, accessibility: true, hadKey: false, keySaved: false })).toBe(false)
-    expect(allSet({ microphone: true, accessibility: false, hadKey: true, keySaved: false })).toBe(false)
-    expect(allSet({ microphone: false, accessibility: true, hadKey: true, keySaved: false })).toBe(false)
+  const granted = { ...base, microphone: true, accessibility: true }
+
+  it('needs both permissions and a key, or the key step skipped', () => {
+    expect(allSet({ ...granted, hadKey: true })).toBe(true)
+    expect(allSet({ ...granted, keySaved: true })).toBe(true)
+    expect(allSet({ ...granted, keySkipped: true })).toBe(true)
+    expect(allSet(granted)).toBe(false)
+    expect(allSet({ ...granted, accessibility: false, hadKey: true })).toBe(false)
+    expect(allSet({ ...granted, microphone: false, keySkipped: true })).toBe(false)
   })
 })
 
