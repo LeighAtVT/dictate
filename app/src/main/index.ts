@@ -6,7 +6,6 @@
 import { app, powerMonitor } from 'electron'
 import fs from 'node:fs'
 import { join } from 'node:path'
-import type { ReplyMap } from '../shared/protocol'
 import { EventLog } from './core/eventLog'
 import { loadShortcuts, loadVocabulary } from './core/fileStores'
 import { History } from './core/history'
@@ -17,10 +16,11 @@ import { Polisher } from './core/polisher'
 import { RunJournal } from './core/runJournal'
 import { SettingsStore } from './core/settingsStore'
 import { Engine } from './engine'
+import { AppStatus, outcomeLogLine } from './appStatus'
 import { PillWindow } from './pill'
 import { PillPresenter } from './pillPresenter'
 import { TrayController } from './tray'
-import { MODEL_PREPARING, modelStatusLine, phaseAfter, trayIcon, type DictationPhase } from './trayModel'
+import { phaseAfter, trayIcon, type DictationPhase } from './trayModel'
 import { variantFor } from './variant'
 
 const variant = variantFor(app.getName(), app.getPath('home'))
@@ -93,14 +93,8 @@ function start(): void {
   let polisher = makePolisher()
 
   // --- Status shown in the menu bar ----------------------------------------------------------
-  let modelReady = false
-  let modelStatus: string | null = MODEL_PREPARING
-  let lastModelState: string | null = null
-  let permissions: ReplyMap['permissions'] | null = null
-  let engineFailed = false
+  const status = new AppStatus()
   let phase: DictationPhase = 'idle'
-  const permissionsOK = (): boolean =>
-    permissions === null || (permissions.accessibility && permissions.microphone === 'granted')
 
   // --- Pipeline, hotkey, pill, tray ----------------------------------------------------------
   const pipeline = new Pipeline({
@@ -115,22 +109,14 @@ function start(): void {
       token: () => NoteSaver.defaultToken(),
       file: join(app.getPath('home'), 'Documents', 'Dictate Notes.md')
     }),
-    modelReady: () => modelReady,
+    modelReady: () => status.modelReady,
     hasKey: () => apiKey !== null && apiKey.length > 0,
     platform: 'mac'
   })
 
   const report = (outcome: PipelineOutcome | null): void => {
-    if (outcome === null) return
-    const t = pipeline.lastTimings
-    if (outcome.type === 'inserted' && t) {
-      const f = (n: number): string => n.toFixed(2)
-      record(`dictation inserted transcribe=${f(t.transcribe)}s polish=${f(t.polish)}s insert=${f(t.insert)}s total=${f(t.total)}s`)
-    } else if (outcome.type === 'failed') {
-      record(`dictation failed: ${outcome.reason}`)
-    } else {
-      record(`dictation ${outcome.type}`)
-    }
+    const line = outcomeLogLine(outcome, pipeline.lastTimings)
+    if (line) record(line)
   }
 
   // Ruling R14: `pipeline.handle` is called synchronously and its promise returned as is, and
@@ -140,7 +126,8 @@ function start(): void {
     'control',
     (action, mode) => {
       const outcome = pipeline.handle(action, mode)
-      void outcome.then(report)
+      // Observing only: a throw in `report` must not become an unhandled rejection.
+      outcome.then(report).catch(() => {})
       return outcome
     },
     undefined,
@@ -166,10 +153,10 @@ function start(): void {
     () => ({
       appName: variant.name,
       recent: history.recent(),
-      permissionsOK: permissionsOK(),
+      permissionsOK: status.permissionsOK,
       hasKey: apiKey !== null && apiKey.length > 0,
-      modelStatus,
-      engineFailed
+      modelStatus: status.modelStatus,
+      engineFailed: status.engineFailed
     }),
     {
       openOnboarding,
@@ -189,7 +176,13 @@ function start(): void {
     }
   )
   const refreshIcon = (): void =>
-    tray.set(trayIcon(phase, { permissionsOK: permissionsOK(), modelReady, engineFailed }))
+    tray.set(
+      trayIcon(phase, {
+        permissionsOK: status.permissionsOK,
+        modelReady: status.modelReady,
+        engineFailed: status.engineFailed
+      })
+    )
   refreshIcon()
 
   pipeline.onState = (state) => {
@@ -202,13 +195,12 @@ function start(): void {
   let quitting = false
   engine.on('event', (event) => {
     switch (event.event) {
-      case 'model':
-        modelStatus = modelStatusLine(event)
-        modelReady = event.state === 'ready'
-        if (event.state !== lastModelState) record(`speech model ${event.state}`)
-        lastModelState = event.state
+      case 'model': {
+        const line = status.model(event)
+        if (line) record(line)
         refreshIcon()
         return
+      }
       case 'log':
         record(`engine: ${event.message}`)
         return
@@ -224,9 +216,7 @@ function start(): void {
   engine.on('down', () => {
     if (quitting) return
     record('engine down')
-    modelReady = false
-    modelStatus = MODEL_PREPARING
-    lastModelState = null
+    status.engineDown()
     // Any recording died with the process, and its key-up will never arrive.
     controller.reset()
     pill.engineDown()
@@ -234,7 +224,7 @@ function start(): void {
   })
   engine.on('failed', () => {
     record('engine failed: stopped restarting')
-    engineFailed = true
+    status.engineFailedForGood()
     pill.engineUp()
     refreshIcon()
   })
@@ -252,20 +242,15 @@ function start(): void {
 
   // --- Permissions: poll every second, Onboarding while one is missing ------------------------
   let polling = false
-  let lastOK: boolean | null = null
   setInterval(() => {
     if (polling) return
     polling = true
     engine
       .request({ op: 'permissions' })
       .then((p) => {
-        const changed =
-          permissions === null || p.accessibility !== permissions.accessibility || p.microphone !== permissions.microphone
-        permissions = p
-        if (changed) record(`permissions accessibility=${p.accessibility} microphone=${p.microphone}`)
-        const ok = permissionsOK()
-        if (!ok && lastOK !== false) openOnboarding()
-        lastOK = ok
+        const { log, openOnboarding: missing } = status.permissionsReport(p)
+        if (log) record(log)
+        if (missing) openOnboarding()
         refreshIcon()
       })
       .catch(() => {})
@@ -282,7 +267,7 @@ function start(): void {
   }
 
   // v1's applicationShouldHandleReopen: opening Dictate again shows its window.
-  app.on('second-instance', () => (permissionsOK() ? openSettings() : openOnboarding()))
+  app.on('second-instance', () => (status.permissionsOK ? openSettings() : openOnboarding()))
 
   app.on('before-quit', (event) => {
     if (quitting) return
