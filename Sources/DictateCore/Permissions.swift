@@ -22,8 +22,13 @@ public enum Permissions {
     /// `"granted"`, `.notDetermined` → `"undetermined"`, and `.denied` as well as
     /// `.restricted` both → `"denied"` (restricted has no retry path, so it's
     /// treated the same as an outright denial).
-    public static var microphoneStatusName: String {
-        switch microphoneStatus {
+    public static var microphoneStatusName: String { microphoneStatusName(for: microphoneStatus) }
+
+    /// Pure version of `microphoneStatusName`, so ruling R1's mapping can be tested directly
+    /// against all four `AVAuthorizationStatus` cases without depending on this machine's actual
+    /// microphone permission state.
+    public static func microphoneStatusName(for status: AVAuthorizationStatus) -> String {
+        switch status {
         case .authorized: "granted"
         case .notDetermined: "undetermined"
         case .denied, .restricted: "denied"

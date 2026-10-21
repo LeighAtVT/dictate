@@ -91,6 +91,26 @@ private final class FakeKeys: KeySending, @unchecked Sendable {
     func sendCommandC() {}
 }
 
+/// Fix round 1, Important issue 1: `requestPermission`'s test called the real
+/// `Permissions.requestMicrophone()`, which can raise a live mic prompt or open System Settings on
+/// whatever machine runs the suite. This fake lets every test in this file go through
+/// `PermissionsProviding` instead, and never touch the real AX/AV APIs.
+private final class FakePermissions: PermissionsProviding, @unchecked Sendable {
+    private let lock = NSLock()
+    var accessibilityToReturn = true
+    var microphoneStatusNameToReturn = "granted"
+    private var _microphoneRequests = 0
+    private var _accessibilityRequests = 0
+
+    var accessibility: Bool { accessibilityToReturn }
+    var microphoneStatusName: String { microphoneStatusNameToReturn }
+    func requestMicrophone() { lock.withLock { _microphoneRequests += 1 } }
+    func requestAccessibility() { lock.withLock { _accessibilityRequests += 1 } }
+
+    var microphoneRequests: Int { lock.withLock { _microphoneRequests } }
+    var accessibilityRequests: Int { lock.withLock { _accessibilityRequests } }
+}
+
 /// Thread-safe sink + minimal line decoder, matching `ServerTests.swift`'s
 /// (private to that file, so re-declared here for the concurrency test).
 private final class LineSink: @unchecked Sendable {
@@ -110,15 +130,18 @@ private struct DecodedLine {
     }
 }
 
+/// `permissions` defaults to a fake, never the real `SystemPermissions()`, so no test here can
+/// accidentally raise a live mic prompt or open System Settings (fix round 1, Important issue 1).
 private func makeDesktop(
     context: ContextProviding = FakeContext(),
     inserter: Inserting = FakeInserter(),
     selectionReader: SelectionReading = FakeSelectionReader(),
     secretStore: SecretStoring = FakeSecretStore(),
-    legacyStore: SecretStoring = FakeSecretStore()
+    legacyStore: SecretStoring = FakeSecretStore(),
+    permissions: PermissionsProviding = FakePermissions()
 ) -> Desktop {
     Desktop(frontmostContext: context, inserter: inserter, selectionReader: selectionReader,
-            secretStore: secretStore, legacyStore: legacyStore)
+            secretStore: secretStore, legacyStore: legacyStore, permissions: permissions)
 }
 
 @MainActor
@@ -204,17 +227,24 @@ private func makeDesktop(
         #expect(withoutText["text"] == .null)
     }
 
-    @Test func secretGetReturnsStoredValueOrNull() async throws {
+    @Test func secretGetReturnsStoredValue() async throws {
         let store = FakeSecretStore()
         store.valueToReturn = "sk-or-v1-abc123"
         let desktop = makeDesktop(secretStore: store)
 
         let fields = try await desktop.secretGet()
         #expect(fields["value"] == .string("sk-or-v1-abc123"))
+    }
 
+    // `secret.get` caches (fix round 1, Important issue 3), so this uses its own store/Desktop
+    // rather than reusing one that already cached a non-nil value above.
+    @Test func secretGetReturnsNullWhenNoValueIsStored() async throws {
+        let store = FakeSecretStore()
         store.valueToReturn = nil
-        let emptyFields = try await desktop.secretGet()
-        #expect(emptyFields["value"] == .null)
+        let desktop = makeDesktop(secretStore: store)
+
+        let fields = try await desktop.secretGet()
+        #expect(fields["value"] == .null)
     }
 
     @Test func secretSetAndDeleteCallTheInjectedStoreAndReturnEmptyFields() async throws {
@@ -243,27 +273,38 @@ private func makeDesktop(
         #expect(legacy.deleteCalls == 0)
     }
 
-    @Test func permissionsReportsAccessibilityBoolAndMicrophoneStatusString() async throws {
-        let desktop = makeDesktop()
+    @Test func permissionsReportsTheInjectedProvidersValues() async throws {
+        let permissions = FakePermissions()
+        permissions.accessibilityToReturn = false
+        permissions.microphoneStatusNameToReturn = "undetermined"
+        let desktop = makeDesktop(permissions: permissions)
+
         let fields = try await desktop.permissions()
 
-        // Can't control the real AX/AV authorization state from a unit test, so this only proves
-        // the shape: a bool and one of the three allowed strings.
-        guard case .bool = fields["accessibility"] else {
-            Issue.record("expected accessibility to be a bool, got \(String(describing: fields["accessibility"]))")
-            return
-        }
-        guard case .string(let microphone) = fields["microphone"] else {
-            Issue.record("expected microphone to be a string, got \(String(describing: fields["microphone"]))")
-            return
-        }
-        #expect(["granted", "denied", "undetermined"].contains(microphone))
+        #expect(fields["accessibility"] == .bool(false))
+        #expect(fields["microphone"] == .string("undetermined"))
     }
 
-    @Test func requestPermissionReturnsEmptyFieldsForBothNames() async throws {
-        let desktop = makeDesktop()
-        let microphoneFields = try await desktop.requestPermission(.microphone)
-        #expect(microphoneFields.isEmpty)
+    @Test func requestPermissionCallsRequestMicrophoneForMicrophoneName() async throws {
+        let permissions = FakePermissions()
+        let desktop = makeDesktop(permissions: permissions)
+
+        let fields = try await desktop.requestPermission(.microphone)
+
+        #expect(fields.isEmpty)
+        #expect(permissions.microphoneRequests == 1)
+        #expect(permissions.accessibilityRequests == 0)
+    }
+
+    @Test func requestPermissionCallsRequestAccessibilityForAccessibilityName() async throws {
+        let permissions = FakePermissions()
+        let desktop = makeDesktop(permissions: permissions)
+
+        let fields = try await desktop.requestPermission(.accessibility)
+
+        #expect(fields.isEmpty)
+        #expect(permissions.accessibilityRequests == 1)
+        #expect(permissions.microphoneRequests == 0)
     }
 
     @Test func secretGetBlockedDoesNotDelayContextReply() async throws {
@@ -290,5 +331,42 @@ private func makeDesktop(
         let allLines = sink.lines.map(DecodedLine.init)
         #expect(allLines.contains { $0.reply == 1 && $0.ok == true })
         #expect(slowStore.readCalls == 1)
+    }
+
+    /// Fix round 1, Important issue 3: `secret.get` goes through `CachedSecret`, the same seam v1
+    /// uses for its Keychain-backed API key, so a second `secret.get` arriving while the first is
+    /// still blocked (e.g. on a Keychain-unlock prompt) gets `nil` back immediately instead of also
+    /// blocking a thread on the same read — and `secret.set` updates the cache directly, so the
+    /// next `secret.get` doesn't need a redundant Keychain read at all.
+    @Test func secretGetCachesWhileFirstReadIsBlockedThenSecretSetUpdatesTheCache() async throws {
+        let store = FakeSecretStore()
+        store.readDelay = 2.0
+        store.valueToReturn = "k1"
+        let desktop = makeDesktop(secretStore: store)
+
+        let firstGet = Task { try await desktop.secretGet() }
+
+        // Wait for the first read to actually start blocking before firing the second.
+        let deadline = Date().addingTimeInterval(1)
+        while store.readCalls == 0, Date() < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(store.readCalls == 1)
+
+        let secondStart = Date()
+        let secondFields = try await desktop.secretGet()
+        let secondElapsed = Date().timeIntervalSince(secondStart)
+
+        #expect(secondFields["value"] == .null)
+        #expect(secondElapsed < 0.2)
+        #expect(store.readCalls == 1) // the second call never touched the store
+
+        let firstFields = try await firstGet.value
+        #expect(firstFields["value"] == .string("k1"))
+
+        _ = try await desktop.secretSet("k2")
+        let afterSetFields = try await desktop.secretGet()
+        #expect(afterSetFields["value"] == .string("k2"))
+        #expect(store.readCalls == 1) // still just the one real read; `set` updated the cache directly
     }
 }

@@ -33,25 +33,56 @@ public protocol SecretStoring: Sendable {
 
 extension KeychainStore: SecretStoring {}
 
+/// The same accessibility/microphone checks and requests as `DictateCore.Permissions`, behind a
+/// seam so tests can inject a fake instead of ever calling the real AX/AV APIs — those can pop a
+/// live microphone prompt or open System Settings (fix round 1, Important issue 1).
+public protocol PermissionsProviding: Sendable {
+    var accessibility: Bool { get }
+    var microphoneStatusName: String { get }
+    func requestMicrophone()
+    func requestAccessibility()
+}
+
+/// The real thing: forwards every call straight to `DictateCore.Permissions`. This is the only
+/// type in this file that touches the actual system APIs.
+public struct SystemPermissions: PermissionsProviding {
+    public init() {}
+    public var accessibility: Bool { Permissions.accessibility }
+    public var microphoneStatusName: String { Permissions.microphoneStatusName }
+    public func requestMicrophone() { Permissions.requestMicrophone() }
+    public func requestAccessibility() { Permissions.requestAccessibility() }
+}
+
 public final class Desktop: @unchecked Sendable {
     private let frontmostContext: ContextProviding
     private let inserter: Inserting
     private let selectionReader: SelectionReading
     private let secretStore: SecretStoring
+    /// Caches `secretStore`'s read the way v1's `AppDelegate`/`AppSettings` cache the Keychain read
+    /// for the API key (`CachedSecret`, `Sources/DictateCore/LaunchAgent.swift`): while the first
+    /// `secret.get` is blocked (e.g. behind a Keychain-unlock prompt), a second `secret.get`
+    /// returns nil immediately instead of also blocking a thread on the same read. `secret.set`/
+    /// `secret.delete` call `CachedSecret.set(_:)` after a successful write/delete so the next
+    /// `secret.get` reflects the change without a redundant Keychain read.
+    private let secretCache: CachedSecret
     private let legacyStore: SecretStoring
+    private let permissionsProvider: PermissionsProviding
 
     public init(
         frontmostContext: ContextProviding,
         inserter: Inserting,
         selectionReader: SelectionReading,
         secretStore: SecretStoring,
-        legacyStore: SecretStoring
+        legacyStore: SecretStoring,
+        permissions: PermissionsProviding = SystemPermissions()
     ) {
         self.frontmostContext = frontmostContext
         self.inserter = inserter
         self.selectionReader = selectionReader
         self.secretStore = secretStore
+        self.secretCache = CachedSecret(load: { secretStore.read() })
         self.legacyStore = legacyStore
+        self.permissionsProvider = permissions
     }
 
     /// `FrontmostContext.current()` touches Accessibility, so it hops to the main thread, the same
@@ -83,7 +114,7 @@ public final class Desktop: @unchecked Sendable {
 
     public func permissions() async throws -> [String: JSONValue] {
         let (accessibility, microphone) = await MainActor.run {
-            (Permissions.accessibility, Permissions.microphoneStatusName)
+            (permissionsProvider.accessibility, permissionsProvider.microphoneStatusName)
         }
         return ["accessibility": .bool(accessibility), "microphone": .string(microphone)]
     }
@@ -91,8 +122,8 @@ public final class Desktop: @unchecked Sendable {
     public func requestPermission(_ name: EngineRequest.PermissionName) async throws -> [String: JSONValue] {
         await MainActor.run {
             switch name {
-            case .microphone: Permissions.requestMicrophone()
-            case .accessibility: Permissions.requestAccessibility()
+            case .microphone: permissionsProvider.requestMicrophone()
+            case .accessibility: permissionsProvider.requestAccessibility()
             }
         }
         return [:]
@@ -101,18 +132,26 @@ public final class Desktop: @unchecked Sendable {
     /// Runs off the main actor, detached from whatever context dispatched this request: a
     /// Keychain read can block the calling thread outright (e.g. behind a Keychain-unlock
     /// prompt), and must never hold up `context`/`paste`/other main-actor work queued behind it.
+    /// Goes through `secretCache` (not `secretStore` directly) so a second `secret.get` arriving
+    /// while the first is still blocked gets `nil` back immediately rather than also blocking.
     public func secretGet() async throws -> [String: JSONValue] {
-        let value = await Task.detached { [secretStore] in secretStore.read() }.value
+        let value = await Task.detached { [secretCache] in secretCache.value() }.value
         return ["value": value.map(JSONValue.string) ?? .null]
     }
 
     public func secretSet(_ value: String) async throws -> [String: JSONValue] {
-        try await Task.detached { [secretStore] in try secretStore.write(value) }.value
+        try await Task.detached { [secretStore, secretCache] in
+            try secretStore.write(value)
+            secretCache.set(value)
+        }.value
         return [:]
     }
 
     public func secretDelete() async throws -> [String: JSONValue] {
-        try await Task.detached { [secretStore] in try secretStore.delete() }.value
+        try await Task.detached { [secretStore, secretCache] in
+            try secretStore.delete()
+            secretCache.set(nil)
+        }.value
         return [:]
     }
 
