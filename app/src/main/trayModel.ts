@@ -95,7 +95,14 @@ export function trayMenu(state: TrayState): TrayItem[] {
   items.push({ kind: 'separator' })
 
   if (!state.hasKey) {
-    items.push({ kind: 'action', label: 'Polish off — add OpenRouter key', action: 'openSettings', enabled: true })
+    // The key lives on the Polish tab, so open Settings there.
+    items.push({
+      kind: 'action',
+      label: 'Polish off — add OpenRouter key',
+      action: 'openSettings',
+      enabled: true,
+      payload: 'polish'
+    })
   }
   items.push({ kind: 'action', label: 'Settings…', action: 'openSettings', enabled: true, accelerator: 'Command+,' })
   items.push({ kind: 'separator' })

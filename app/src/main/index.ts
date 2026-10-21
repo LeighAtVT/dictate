@@ -18,7 +18,7 @@ import { RunJournal } from './core/runJournal'
 import { SettingsStore } from './core/settingsStore'
 import { Engine } from './engine'
 import { createHandlers, distinctBundleIDs, registerIpc } from './ipc'
-import { SETTINGS_CHANGED } from '../shared/dictate'
+import { isSettingsTab, SETTINGS_CHANGED } from '../shared/dictate'
 import { AppStatus, outcomeLogLine } from './appStatus'
 import { PillWindow } from './pill'
 import { PillPresenter } from './pillPresenter'
@@ -145,7 +145,7 @@ function start(): void {
   // --- Settings and Onboarding windows, and their window.dictate API (ipc.ts) ----------------
   const windows = new AppWindows(variant.name, record)
   const openOnboarding = (): void => windows.openOnboarding()
-  const openSettings = (): void => windows.openSettings()
+  const openSettings = (tab?: string): void => windows.openSettings(isSettingsTab(tab) ? tab : undefined)
   registerIpc(
     ipcMain,
     createHandlers({
@@ -270,12 +270,13 @@ function start(): void {
   engine.request({ op: 'setHotkey', key: settings.get().hotkey }).catch(() => {})
 
   settings.on('change', (s, changed) => {
-    windows.broadcast(SETTINGS_CHANGED, s)
     if (changed.includes('cleanupModel') || changed.includes('editModel')) polisher = makePolisher()
     if (changed.includes('hotkey')) {
       controller.reset()
       engine.request({ op: 'setHotkey', key: s.hotkey }).catch(() => {})
     }
+    // Last, so a failed send to a window can't skip the polisher rebuild or the hotkey reset.
+    windows.broadcast(SETTINGS_CHANGED, s)
   })
 
   // --- Permissions: poll every second, Onboarding while one is missing ------------------------

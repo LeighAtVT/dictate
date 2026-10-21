@@ -63,5 +63,13 @@ export type Channel = (typeof CHANNELS)[keyof typeof CHANNELS]
 /** Push channel, main -> renderer: the full settings after a change. */
 export const SETTINGS_CHANGED = 'dictate:settings'
 
+/** The Settings window's tabs, in order. Main opens one by putting its name in the URL hash. */
+export const SETTINGS_TABS = ['key', 'polish', 'vocabulary', 'shortcuts', 'language', 'apps'] as const
+export type SettingsTab = (typeof SETTINGS_TABS)[number]
+
+export function isSettingsTab(v: unknown): v is SettingsTab {
+  return typeof v === 'string' && (SETTINGS_TABS as readonly string[]).includes(v)
+}
+
 /** v1's `Style.allCases`, in order, for the Apps tab. */
 export const STYLES: readonly Style[] = ['slack', 'email', 'docs', 'raw', 'off']

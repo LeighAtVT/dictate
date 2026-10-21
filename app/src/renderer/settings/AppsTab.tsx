@@ -10,7 +10,7 @@ export function AppsTab({ settings, api, save, report }: TabProps): React.JSX.El
   const [known, setKnown] = useState<string[]>([])
 
   useEffect(() => {
-    api.knownApps().then(setKnown, report)
+    api.knownApps().then(setKnown, () => report('load'))
   }, [api, report])
 
   return (

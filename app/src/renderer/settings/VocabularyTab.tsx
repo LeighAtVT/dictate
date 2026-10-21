@@ -6,7 +6,10 @@ export function VocabularyTab({ api, report }: TabProps): React.JSX.Element {
   const [text, setText] = useState('')
 
   useEffect(() => {
-    api.vocabulary.get().then((terms) => setText(terms.join('\n')), report)
+    api.vocabulary.get().then(
+      (terms) => setText(terms.join('\n')),
+      () => report('load')
+    )
   }, [api, report])
 
   const saveVocabulary = (): void => {
@@ -14,7 +17,7 @@ export function VocabularyTab({ api, report }: TabProps): React.JSX.Element {
       .split('\n')
       .map((line) => line.trim())
       .filter((line) => line.length > 0)
-    api.vocabulary.set(terms).catch(report)
+    api.vocabulary.set(terms).catch(() => report('save'))
   }
 
   return (

@@ -7,14 +7,15 @@ import type { TabProps } from './App'
 import { ModelPicker } from './ModelPicker'
 import { Section } from './Section'
 
-export function PolishTab({ settings, api, save }: TabProps): React.JSX.Element {
+export function PolishTab({ settings, api, save, report }: TabProps): React.JSX.Element {
   const [keyInput, setKeyInput] = useState('')
-  const [hasKey, setHasKey] = useState(false)
+  /** Null until the Keychain answers; 'unknown' when the check itself failed. */
+  const [hasKey, setHasKey] = useState<boolean | 'unknown' | null>(null)
   const [keyError, setKeyError] = useState<string | null>(null)
   const [historyCleared, setHistoryCleared] = useState(false)
 
   useEffect(() => {
-    api.hasKey().then(setHasKey, () => {})
+    api.hasKey().then(setHasKey, () => setHasKey('unknown'))
   }, [api])
 
   const saveKey = (key: string): void => {
@@ -42,7 +43,7 @@ export function PolishTab({ settings, api, save }: TabProps): React.JSX.Element 
           <button type="button" disabled={keyInput.trim().length === 0} onClick={() => saveKey(keyInput)}>
             Save key
           </button>
-          {hasKey ? (
+          {hasKey === true && (
             <>
               <span className="green">Key saved ✓</span>
               <span className="spacer" />
@@ -50,9 +51,9 @@ export function PolishTab({ settings, api, save }: TabProps): React.JSX.Element 
                 Remove key
               </button>
             </>
-          ) : (
-            <span className="secondary spacer">No key: text is cleaned locally only.</span>
           )}
+          {hasKey === false && <span className="secondary spacer">No key: text is cleaned locally only.</span>}
+          {hasKey === 'unknown' && <span className="secondary spacer">Couldn&apos;t check for a saved key.</span>}
         </div>
         {keyError !== null && <div className="caption">{keyError}</div>}
       </Section>
@@ -90,7 +91,10 @@ export function PolishTab({ settings, api, save }: TabProps): React.JSX.Element 
           <button
             type="button"
             onClick={() => {
-              api.clearHistory().then(() => setHistoryCleared(true), () => {})
+              api.clearHistory().then(
+                () => setHistoryCleared(true),
+                () => report('save')
+              )
             }}
           >
             Clear history

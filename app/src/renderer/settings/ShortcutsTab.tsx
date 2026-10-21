@@ -8,7 +8,7 @@ export function ShortcutsTab({ api, report }: TabProps): React.JSX.Element {
   const [drafts, setDrafts] = useState<Shortcut[]>([])
 
   useEffect(() => {
-    api.shortcuts.get().then(setDrafts, report)
+    api.shortcuts.get().then(setDrafts, () => report('load'))
   }, [api, report])
 
   const update = (id: string, change: Partial<Shortcut>): void =>
@@ -18,8 +18,8 @@ export function ShortcutsTab({ api, report }: TabProps): React.JSX.Element {
     try {
       await api.shortcuts.set(drafts.filter((s) => s.phrase.trim().length > 0))
       setDrafts(await api.shortcuts.get())
-    } catch (err) {
-      report(err)
+    } catch {
+      report('save')
     }
   }
 

@@ -105,6 +105,16 @@ describe('trayMenu', () => {
     ])
   })
 
+  it('opens Settings on the Polish tab from the no-key item, and on the default tab from Settings…', () => {
+    const items = trayMenu({ ...base, hasKey: false }).filter(
+      (i): i is Extract<TrayItem, { kind: 'action' }> => i.kind === 'action' && i.action === 'openSettings'
+    )
+    expect(items.map((i) => [i.label, i.payload])).toEqual([
+      ['Polish off — add OpenRouter key', 'polish'],
+      ['Settings…', undefined]
+    ])
+  })
+
   it('enables "Paste raw instead" only when the newest entry was changed by cleanup', () => {
     const pasteRaw = (recent: HistoryEntry[]): boolean | undefined => {
       const item = trayMenu({ ...base, recent }).find((i) => i.kind === 'action' && i.action === 'pasteRaw')

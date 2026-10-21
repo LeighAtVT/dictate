@@ -5,27 +5,34 @@
 // is the renderer's job (renderer/settings, renderer/onboarding); this only creates and finds them.
 import { app, BrowserWindow, type WebContents } from 'electron'
 import { join } from 'node:path'
+import type { SettingsTab } from '../shared/dictate'
 
 type Kind = 'settings' | 'onboarding'
 
+// v1's SwiftUI frames, which include the padding: Settings is 600 x 460, Onboarding 460 wide (its
+// height there fits the content; here it's fixed, with room for the key step).
 const SPEC: Record<Kind, { width: number; height: number; title: (appName: string) => string }> = {
-  // v1: a 600 x 460 TabView with 20 px padding.
-  settings: { width: 640, height: 500, title: (name) => `${name} Settings` },
-  // v1: 460 wide with 24 px padding; taller for the key step.
-  onboarding: { width: 508, height: 470, title: (name) => `Set up ${name}` }
+  settings: { width: 600, height: 460, title: (name) => `${name} Settings` },
+  onboarding: { width: 460, height: 500, title: (name) => `Set up ${name}` }
 }
 
 export class AppWindows {
   private readonly windows: Partial<Record<Kind, BrowserWindow>> = {}
 
-  /** `log` gets load failures only, never anything typed into the windows. */
+  /** `log` gets load failures and closes only, never anything typed into the windows. */
   constructor(
     private readonly appName: string,
     private readonly log: (message: string) => void
   ) {}
 
-  openSettings(): void {
-    this.open('settings')
+  /** Opens Settings, on `tab` when given; otherwise on whatever tab it already shows (Key when new). */
+  openSettings(tab?: SettingsTab): void {
+    const existing = this.windows.settings
+    this.open('settings', tab)
+    // A window that was already open learns its tab from a hash change (renderer/settings/App.tsx).
+    if (tab !== undefined && existing !== undefined && !existing.isDestroyed()) {
+      existing.webContents.executeJavaScript(`location.hash = ${JSON.stringify(tab)}`).catch(() => {})
+    }
   }
 
   openOnboarding(): void {
@@ -44,10 +51,10 @@ export class AppWindows {
     }
   }
 
-  private open(kind: Kind): void {
+  private open(kind: Kind, hash?: string): void {
     let window = this.windows[kind]
     if (window === undefined || window.isDestroyed()) {
-      window = this.create(kind)
+      window = this.create(kind, hash)
       this.windows[kind] = window
     }
     // v1's `present`: NSApp.activate(ignoringOtherApps:) then makeKeyAndOrderFront. A menu-bar
@@ -57,7 +64,7 @@ export class AppWindows {
     window.focus()
   }
 
-  private create(kind: Kind): BrowserWindow {
+  private create(kind: Kind, hash?: string): BrowserWindow {
     const spec = SPEC[kind]
     const window = new BrowserWindow({
       width: spec.width,
@@ -80,6 +87,7 @@ export class AppWindows {
     // Keep the variant's title rather than the page's <title>.
     window.on('page-title-updated', (event) => event.preventDefault())
     window.on('closed', () => {
+      this.log(`${kind}: closed`)
       if (this.windows[kind] === window) delete this.windows[kind]
     })
     const contents: WebContents = window.webContents
@@ -91,9 +99,9 @@ export class AppWindows {
     contents.on('render-process-gone', (_event, details) => this.log(`${kind}: renderer gone: ${details.reason}`))
 
     if (process.env['ELECTRON_RENDERER_URL']) {
-      void window.loadURL(`${process.env['ELECTRON_RENDERER_URL']}/${kind}/index.html`)
+      void window.loadURL(`${process.env['ELECTRON_RENDERER_URL']}/${kind}/index.html${hash ? `#${hash}` : ''}`)
     } else {
-      void window.loadFile(join(__dirname, `../renderer/${kind}/index.html`))
+      void window.loadFile(join(__dirname, `../renderer/${kind}/index.html`), hash ? { hash } : undefined)
     }
     return window
   }
