@@ -82,19 +82,6 @@ let speech = Speech(
     emit: { event in writeLine(encodeLine(event)) }
 )
 
-/// Frees the Whisper model (if loaded) before the process exits — ggml aborts at
-/// exit if a context is still alive (see `Transcriber.close()` and
-/// `AppDelegate.applicationShouldTerminate`) — then terminates.
-private let shutdownAndExit: @Sendable (Int32) -> Never = { code in
-    let semaphore = DispatchSemaphore(value: 0)
-    Task {
-        await speech.shutdown()
-        semaphore.signal()
-    }
-    semaphore.wait()
-    exit(code)
-}
-
 let handlers = Handlers(
     startRecording: {
         try speech.start()
@@ -116,11 +103,13 @@ let handlers = Handlers(
         return fields
     },
     quit: {
-        // The reply this returns is written by `Server` right after this
-        // closure returns (synchronously, same Task); exiting 200 ms later
-        // leaves ample time for that write (and its `fflush`) to land first.
-        outputQueue.asyncAfter(deadline: .now() + 0.2) { exit(0) }
-        await speech.shutdown()
+        // `shutdownThenExit` awaits `speech.shutdown()` to full completion
+        // before even scheduling `exit` — if a transcription is in flight,
+        // `Transcriber.close()` queues behind it on the actor, so this can
+        // take a while. Only once that's done does this closure return,
+        // letting `Server` write the reply; `exit` then fires a short grace
+        // period later, giving that reply (and its `fflush`) time to land.
+        await shutdownThenExit(shutdown: { await speech.shutdown() }, queue: outputQueue, exit: { exit($0) })
         return [:]
     }
 )
@@ -134,7 +123,7 @@ Task.detached {
 /// `true` for a `{"id":N,"op":"quit",...}` line. Checked so the reader loop can stop
 /// itself without also racing the `quit` handler's own shutdown+exit: if the brain
 /// closes stdin right after sending `quit` (plausible for a graceful shutdown), the
-/// next `readLine()` would otherwise see EOF and call `shutdownAndExit` immediately,
+/// next `readLine()` would otherwise see EOF and run the EOF shutdown path too,
 /// potentially exiting before the `quit` request's own reply is written.
 private let isQuitRequest: @Sendable (String) -> Bool = { line in
     guard let object = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any] else { return false }
@@ -145,14 +134,18 @@ let stdinThread = Thread {
     while let line = readLine(strippingNewline: true) {
         server.receive(line)
         if isQuitRequest(line) {
-            // The dispatched `quit` handler (above) now owns shutdown + exit;
+            // The dispatched `quit` handler (above) now owns shutdown + exit
+            // via the same `shutdownThenExit` routine as the EOF path below;
             // stop reading so a closed pipe's EOF can't race ahead of it.
             return
         }
     }
     // EOF with no `quit` seen: the parent (the Electron brain) closed the
-    // pipe some other way, e.g. it exited.
-    shutdownAndExit(0)
+    // pipe some other way, e.g. it exited. Same shutdown-then-exit routine
+    // as the `quit` handler, so the two paths can't diverge.
+    Task {
+        await shutdownThenExit(shutdown: { await speech.shutdown() }, queue: outputQueue, exit: { exit($0) })
+    }
 }
 stdinThread.start()
 
