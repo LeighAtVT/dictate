@@ -25,6 +25,7 @@ ROOT=$PWD
 
 APP="/Applications/Dictate Preview.app"
 BUNDLE_ID=com.leigh.dictate.preview
+AGENT_SERVICE="gui/$(id -u)/com.leigh.dictate.preview.keepalive"
 V1_APP=/Applications/Dictate.app
 DATA="$HOME/Library/Application Support/Dictate Preview"
 LOG="$HOME/Library/Logs/Dictate Preview/dictate.log"
@@ -59,7 +60,18 @@ wait_for_log() {
 preview_running() { pgrep -f "$APP/Contents/MacOS/" >/dev/null; }
 v1_running() { pgrep -f "$V1_APP/Contents/MacOS/Dictate" >/dev/null; }
 
+# The preview's login agent (once the release build has run) restarts a killed preview, and its
+# copy would hold the single-instance lock this run's launches need. Unload it, and don't put it
+# back afterwards: that would start this e2e build at login. Opening the release build again
+# re-enables it (app/src/main/startup.ts).
+unload_preview_agent() {
+  launchctl print "$AGENT_SERVICE" >/dev/null 2>&1 || return 0
+  launchctl bootout "$AGENT_SERVICE" >/dev/null 2>&1 || true
+  say "Dictate Preview's login agent was unloaded; open the release Dictate Preview to re-enable it."
+}
+
 quit_preview() {
+  unload_preview_agent
   # Only when running: an AppleScript `tell` would otherwise launch it.
   preview_running || return 0
   osascript -e "tell application id \"$BUNDLE_ID\" to quit" >/dev/null 2>&1 || true
