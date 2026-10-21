@@ -19,4 +19,5 @@ mac:
     LSUIElement: true
     NSMicrophoneUsageDescription: Dictate listens only while you are dictating, and audio never leaves your Mac.
     NSAudioCaptureUsageDescription: Dictate records call audio only when you start meeting notes.
+    NSAppleEventsUsageDescription: Dictate Preview asks the old Dictate to quit when you pause it for testing.
 npmRebuild: false

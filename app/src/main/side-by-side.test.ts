@@ -5,13 +5,17 @@ import {
   LAUNCHCTL,
   OSASCRIPT,
   PGREP,
+  PAUSE_FAILED,
+  SWITCH_BACK_FAILED,
   V1_AGENT_LABEL,
   isDisabled,
   pauseV1,
+  serialProbe,
   switchBackToV1,
   v1Status,
   type Exec
 } from './side-by-side'
+import { waitUntil } from './core/pipelineFakes'
 
 const UID = 501
 const HOME = '/Users/test'
@@ -29,36 +33,73 @@ function fakeExec(reply: (file: string, args: string[]) => { code: number; stdou
   return { exec, calls }
 }
 
-describe('pauseV1', () => {
-  it('disables the login agent before booting it out (Review Focus 2), then quits v1 if still running', async () => {
-    const { exec, calls } = fakeExec()
-    const result = await pauseV1({ exec, uid: UID })
+/** A clock the fake sleep moves forward. */
+function clock() {
+  const c = { now: 0 }
+  return {
+    c,
+    sleep: async (ms: number) => {
+      c.now += ms
+    },
+    now: () => c.now
+  }
+}
+
+const DISABLE = `${LAUNCHCTL} disable gui/501/com.leigh.dictate.keepalive`
+const BOOTOUT = `${LAUNCHCTL} bootout gui/501/com.leigh.dictate.keepalive`
+const PGREP_V1 = `${PGREP} -f Dictate\\.app/Contents/MacOS/Dictate$`
+
+describe('pauseV1 (Ruling R31: quit v1 cleanly, then boot out)', () => {
+  it('disables first (Review Focus 2), quits v1, waits for it to exit, then boots out', async () => {
+    let pgreps = 0
+    const { exec, calls } = fakeExec((file) => (file === PGREP ? { code: ++pgreps <= 2 ? 0 : 1 } : { code: 0 }))
+    const t = clock()
+    const result = await pauseV1({ exec, uid: UID, sleep: t.sleep, now: t.now })
     expect(result).toEqual({ ok: true })
-    expect(calls[0]).toBe(`${LAUNCHCTL} disable gui/501/com.leigh.dictate.keepalive`)
-    expect(calls[1]).toBe(`${LAUNCHCTL} bootout gui/501/com.leigh.dictate.keepalive`)
-    expect(calls[2]).toBe(`${PGREP} -f Dictate\\.app/Contents/MacOS/Dictate$`)
-    expect(calls[3]).toMatch(new RegExp(`^${OSASCRIPT} -e `))
-    expect(calls[3]).toContain('application id "com.leigh.dictate" is running')
-    expect(calls[3]).toContain('tell application id "com.leigh.dictate" to quit')
-    expect(calls).toHaveLength(4)
+    expect(calls[0]).toBe(DISABLE)
+    expect(calls[1]).toBe(PGREP_V1)
+    expect(calls[2]).toMatch(new RegExp(`^${OSASCRIPT} -e `))
+    expect(calls[2]).toContain('application id "com.leigh.dictate" is running')
+    expect(calls[2]).toContain('tell application id "com.leigh.dictate" to quit')
+    // Still running once, then gone.
+    expect(calls.slice(3)).toEqual([PGREP_V1, PGREP_V1, BOOTOUT])
+    expect(t.c.now).toBe(250)
   })
 
-  it("doesn't run osascript when the bootout already stopped v1", async () => {
+  it('boots out anyway after 5 s if v1 never exits', async () => {
+    const { exec, calls } = fakeExec(() => ({ code: 0 })) // pgrep always finds v1
+    const t = clock()
+    expect(await pauseV1({ exec, uid: UID, sleep: t.sleep, now: t.now })).toEqual({ ok: true })
+    expect(t.c.now).toBe(5000)
+    expect(calls.at(-1)).toBe(BOOTOUT)
+  })
+
+  it('boots out anyway when osascript fails or is refused', async () => {
+    const { exec, calls } = fakeExec((file) => ({ code: file === OSASCRIPT ? 1 : 0 }))
+    const t = clock()
+    expect(await pauseV1({ exec, uid: UID, sleep: t.sleep, now: t.now })).toEqual({ ok: true })
+    expect(calls.at(-1)).toBe(BOOTOUT)
+  })
+
+  it("doesn't run osascript or wait when v1 isn't running", async () => {
     const { exec, calls } = fakeExec((file) => ({ code: file === PGREP ? 1 : 0 }))
-    await pauseV1({ exec, uid: UID })
-    expect(calls.some((c) => c.startsWith(OSASCRIPT))).toBe(false)
+    const t = clock()
+    expect(await pauseV1({ exec, uid: UID, sleep: t.sleep, now: t.now })).toEqual({ ok: true })
+    expect(calls).toEqual([DISABLE, PGREP_V1, BOOTOUT])
+    expect(t.c.now).toBe(0)
   })
 
-  it('stops without booting out when disable fails, so v1 can never come back alone at login', async () => {
+  it('stops when disable fails, so v1 can never come back alone at login', async () => {
     const { exec, calls } = fakeExec((_f, args) => ({ code: args[0] === 'disable' ? 1 : 0 }))
-    const result = await pauseV1({ exec, uid: UID })
-    expect(result).toEqual({ ok: false, failed: 'disable' })
-    expect(calls).toEqual([`${LAUNCHCTL} disable gui/501/com.leigh.dictate.keepalive`])
+    const t = clock()
+    expect(await pauseV1({ exec, uid: UID, sleep: t.sleep, now: t.now })).toEqual({ ok: false, failed: 'disable' })
+    expect(calls).toEqual([DISABLE])
   })
 
   it("carries on when bootout reports the agent wasn't loaded", async () => {
     const { exec } = fakeExec((file, args) => ({ code: args[0] === 'bootout' ? 3 : file === PGREP ? 1 : 0 }))
-    expect(await pauseV1({ exec, uid: UID })).toEqual({ ok: true })
+    const t = clock()
+    expect(await pauseV1({ exec, uid: UID, sleep: t.sleep, now: t.now })).toEqual({ ok: true })
   })
 })
 
@@ -71,31 +112,85 @@ describe('switchBackToV1', () => {
     expect(calls).toEqual([
       `${LAUNCHCTL} enable gui/501/com.leigh.dictate.keepalive`,
       `${LAUNCHCTL} bootstrap gui/501 ${V1_PLIST}`,
-      `${LAUNCHCTL} kickstart gui/501/com.leigh.dictate.keepalive`,
       `${LAUNCHCTL} disable gui/501/${PREVIEW_LABEL}`,
       `${LAUNCHCTL} bootout gui/501/${PREVIEW_LABEL}`
     ])
     expect(quit).toBe(1)
   })
 
-  it('still starts v1 when its agent was already loaded (bootstrap fails, kickstart works)', async () => {
-    const { exec } = fakeExec((_f, args) => ({ code: args[0] === 'bootstrap' ? 5 : 0 }))
+  it('kickstarts v1 only when bootstrap failed (its agent was still loaded)', async () => {
+    const { exec, calls } = fakeExec((_f, args) => ({ code: args[0] === 'bootstrap' ? 5 : 0 }))
     let quit = 0
     expect(await switchBackToV1({ exec, uid: UID, home: HOME, previewLabel: PREVIEW_LABEL, quit: () => quit++ })).toEqual({
       ok: true
     })
+    expect(calls[2]).toBe(`${LAUNCHCTL} kickstart gui/501/com.leigh.dictate.keepalive`)
     expect(quit).toBe(1)
   })
 
   it("keeps the preview running when v1 can't be started, so there's always one dictation app", async () => {
-    for (const step of ['enable', 'kickstart']) {
-      const { exec, calls } = fakeExec((_f, args) => ({ code: args[0] === step ? 1 : 0 }))
+    const cases: [(args: string[]) => boolean, string][] = [
+      [(args) => args[0] === 'enable', 'enable'],
+      [(args) => args[0] === 'bootstrap' || args[0] === 'kickstart', 'kickstart']
+    ]
+    for (const [fails, step] of cases) {
+      const { exec, calls } = fakeExec((_f, args) => ({ code: fails(args) ? 1 : 0 }))
       let quit = 0
       const result = await switchBackToV1({ exec, uid: UID, home: HOME, previewLabel: PREVIEW_LABEL, quit: () => quit++ })
       expect(result).toEqual({ ok: false, failed: step })
       expect(quit).toBe(0)
       expect(calls.some((c) => c.includes(PREVIEW_LABEL))).toBe(false)
     }
+  })
+
+  it("reports a failed disable of the preview's agent and doesn't quit, so the user is told", async () => {
+    const { exec, calls } = fakeExec((_f, args) => ({ code: args[0] === 'disable' ? 1 : 0 }))
+    let quit = 0
+    const result = await switchBackToV1({ exec, uid: UID, home: HOME, previewLabel: PREVIEW_LABEL, quit: () => quit++ })
+    expect(result).toEqual({ ok: false, failed: 'previewDisable' })
+    expect(quit).toBe(0)
+    expect(calls.at(-1)).toBe(`${LAUNCHCTL} disable gui/501/${PREVIEW_LABEL}`)
+  })
+})
+
+describe('notices for a failed switch', () => {
+  it('names what failed', () => {
+    expect(PAUSE_FAILED).toBe("Couldn't pause old Dictate")
+    expect(SWITCH_BACK_FAILED).toBe("Couldn't switch back to old Dictate")
+  })
+})
+
+describe('serialProbe', () => {
+  it('runs one probe at a time and queues one more for calls made meanwhile', async () => {
+    let runs = 0
+    let release!: () => void
+    const probe = serialProbe(async () => {
+      runs++
+      if (runs === 1) await new Promise<void>((r) => (release = r))
+    })
+    probe()
+    probe()
+    probe() // still only one queued
+    expect(runs).toBe(1)
+    release()
+    await waitUntil(() => runs === 2)
+    await Promise.resolve()
+    expect(runs).toBe(2)
+    probe()
+    await waitUntil(() => runs === 3)
+  })
+
+  it('keeps going after a probe throws', async () => {
+    let runs = 0
+    const probe = serialProbe(async () => {
+      runs++
+      throw new Error('pgrep missing')
+    })
+    probe()
+    await waitUntil(() => runs === 1)
+    for (let i = 0; i < 10; i++) await Promise.resolve()
+    probe()
+    await waitUntil(() => runs === 2)
   })
 })
 
@@ -122,6 +217,11 @@ describe('v1Status', () => {
       running: false,
       agentEnabled: false
     })
+  })
+
+  it("reports nothing (keep the last status) when print-disabled fails, since the agent's state is unknown", async () => {
+    const { exec } = fakeExec((file) => ({ code: file === LAUNCHCTL ? 1 : 0 }))
+    expect(await v1Status({ exec, uid: UID, home: HOME, exists: () => true })).toBeNull()
   })
 
   it('counts an agent with no plist as not enabled (v1 not installed)', async () => {

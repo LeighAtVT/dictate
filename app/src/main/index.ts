@@ -22,7 +22,16 @@ import { SettingsStore } from './core/settingsStore'
 import { Engine } from './engine'
 import { createHandlers, distinctBundleIDs, registerIpc } from './ipc'
 import { copyV1Data, finishMigration, readV1Defaults, type DataStep } from './migrate'
-import { execFileExec, pauseV1, switchBackToV1, v1Status, type V1Status } from './side-by-side'
+import {
+  PAUSE_FAILED,
+  SWITCH_BACK_FAILED,
+  execFileExec,
+  pauseV1,
+  serialProbe,
+  switchBackToV1,
+  v1Status,
+  type V1Status
+} from './side-by-side'
 import { handOff } from './startup'
 import { isSettingsTab, SETTINGS_CHANGED } from '../shared/dictate'
 import { AppStatus, outcomeLogLine } from './appStatus'
@@ -50,7 +59,9 @@ const record = (message: string): void => {
     // Logging must never break dictation.
   }
 }
-const uid = process.getuid?.() ?? 0
+// macOS only, where Node always has getuid.
+const uid = process.getuid!()
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
 
 // v1's handOffToAgentIfNeeded: run under the login agent, which also takes the single-instance lock.
 void handOff({
@@ -71,7 +82,7 @@ void handOff({
     }
   },
   writeFile: atomicWrite,
-  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  sleep,
   now: () => Date.now(),
   log: record
 })
@@ -236,19 +247,11 @@ async function start(): Promise<void> {
 
   // --- Side by side with v1 (preview only): which item the tray shows -------------------------
   let v1: V1Status | null = null
-  let probing = false
-  const probeV1 = (): void => {
-    if (variant.isFinal || probing) return
-    probing = true
-    v1Status({ exec: execFileExec, uid, home, exists: (file) => fs.existsSync(file) })
-      .then((status) => {
-        v1 = status
-      })
-      .catch(() => {})
-      .finally(() => {
-        probing = false
-      })
-  }
+  const probeV1 = serialProbe(async () => {
+    if (variant.isFinal) return
+    // Null: the agent's state couldn't be read, so keep the last status.
+    v1 = (await v1Status({ exec: execFileExec, uid, home, exists: (file) => fs.existsSync(file) })) ?? v1
+  })
   probeV1()
   setInterval(probeV1, 10_000)
 
@@ -280,8 +283,9 @@ async function start(): Promise<void> {
         if (text !== undefined) engine.request({ op: 'copy', text }).catch(() => {})
       },
       pauseV1: () => {
-        void pauseV1({ exec: execFileExec, uid }).then((r) => {
+        void pauseV1({ exec: execFileExec, uid, sleep, now: () => Date.now() }).then((r) => {
           record(r.ok ? 'side-by-side: paused v1' : `side-by-side: pause failed at ${r.failed}`)
+          if (!r.ok) pill.show(PAUSE_FAILED, false, 3)
           probeV1()
         })
       },
@@ -294,7 +298,10 @@ async function start(): Promise<void> {
           previewLabel: variant.agentLabel,
           quit: () => app.quit()
         }).then((r) => {
-          if (!r.ok) record(`side-by-side: switch back failed at ${r.failed}`)
+          if (!r.ok) {
+            record(`side-by-side: switch back failed at ${r.failed}`)
+            pill.show(SWITCH_BACK_FAILED, false, 3)
+          }
           probeV1()
         })
       },

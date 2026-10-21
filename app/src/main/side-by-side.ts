@@ -62,42 +62,91 @@ export interface V1Status {
   agentEnabled: boolean
 }
 
-/** Two cheap commands, run together: `pgrep` and `launchctl print-disabled`. */
+/**
+ * Two cheap commands, run together: `pgrep` and `launchctl print-disabled`. Null when
+ * print-disabled fails: the agent's state is unknown, so the caller keeps its last status.
+ */
 export async function v1Status(deps: {
   exec: Exec
   uid: number
   home: string
   exists: (file: string) => boolean
-}): Promise<V1Status> {
+}): Promise<V1Status | null> {
   const [running, disabled] = await Promise.all([
     isV1Running(deps.exec),
     deps.exec(LAUNCHCTL, ['print-disabled', `gui/${deps.uid}`])
   ])
+  if (disabled.code !== 0) return null
   const installed = deps.exists(agentPlistPath(deps.home, V1_AGENT_LABEL))
   return { installed, running, agentEnabled: installed && !isDisabled(disabled.stdout, V1_AGENT_LABEL) }
 }
 
+/**
+ * Wraps an async probe so only one runs at a time. A call made while one is running queues one
+ * more run (however many calls), so a status change right after an action is never missed.
+ */
+export function serialProbe(run: () => Promise<void>): () => void {
+  let running = false
+  let again = false
+  const probe = (): void => {
+    if (running) {
+      again = true
+      return
+    }
+    running = true
+    run()
+      .catch(() => {})
+      .finally(() => {
+        running = false
+        if (again) {
+          again = false
+          probe()
+        }
+      })
+  }
+  return probe
+}
+
 export type SwitchResult = { ok: true } | { ok: false; failed: string }
 
+/** Pill notices for a Pause or Switch back that didn't happen (the log has the failed step). */
+export const PAUSE_FAILED = "Couldn't pause old Dictate"
+export const SWITCH_BACK_FAILED = "Couldn't switch back to old Dictate"
+
+const QUIT_WAIT_MS = 5000
+const QUIT_POLL_MS = 250
+
 /**
- * Disable first, so v1's agent stays off at the next login, then boot it out, which stops v1
- * now (Review Focus 2). A v1 started some other way (not by its agent) is asked to quit. If
- * disable fails nothing else runs: booting out alone would bring v1 back at login, next to the
- * preview.
+ * Ruling R31. Disable first, so v1's agent stays off at the next login (Review Focus 2); if that
+ * fails nothing else runs, since stopping v1 alone would bring it back at login next to the
+ * preview. Then ask v1 to quit, which it does cleanly (no "unexpected stop" in its run journal,
+ * and KeepAlive {SuccessfulExit: false} doesn't restart a clean exit), and wait up to 5 s for it
+ * to go. Then boot the agent out, whatever happened: that also stops a v1 that didn't quit, or
+ * that macOS didn't let Dictate Preview ask (Automation).
  */
-export async function pauseV1(deps: { exec: Exec; uid: number }): Promise<SwitchResult> {
+export async function pauseV1(deps: {
+  exec: Exec
+  uid: number
+  sleep: (ms: number) => Promise<void>
+  now: () => number
+}): Promise<SwitchResult> {
   const service = `gui/${deps.uid}/${V1_AGENT_LABEL}`
   if ((await deps.exec(LAUNCHCTL, ['disable', service])).code !== 0) return { ok: false, failed: 'disable' }
+  if (await isV1Running(deps.exec)) {
+    await deps.exec(OSASCRIPT, ['-e', QUIT_V1])
+    const deadline = deps.now() + QUIT_WAIT_MS
+    while (deps.now() < deadline && (await isV1Running(deps.exec))) await deps.sleep(QUIT_POLL_MS)
+  }
   // Fails harmlessly when the agent isn't loaded (already booted out, or v1 opened by hand).
   await deps.exec(LAUNCHCTL, ['bootout', service])
-  if (await isV1Running(deps.exec)) await deps.exec(OSASCRIPT, ['-e', QUIT_V1])
   return { ok: true }
 }
 
 /**
- * Re-enable v1's agent and load it, which starts v1 (RunAtLoad); `kickstart` starts it when the
- * agent was still loaded and so bootstrap had nothing to do. Only once v1 is starting does the
- * preview disable and boot out its own agent and quit, so there's always one dictation app.
+ * Re-enable v1's agent and load it, which starts v1 (RunAtLoad). When the agent was still loaded,
+ * bootstrap fails and `kickstart` starts v1 instead. Only once v1 is starting does the preview
+ * disable its own agent (if that fails, it stops and says so, rather than quit and come back next
+ * to v1 at login), boot it out, and quit, so there's always one dictation app.
  * Booting out the preview's own agent stops this process when the agent started it (launchd
  * sends SIGTERM), so it comes last; `quit` covers a preview that was opened some other way.
  * Either way the agent is gone, so nothing restarts the preview.
@@ -112,11 +161,12 @@ export async function switchBackToV1(deps: {
   const domain = `gui/${deps.uid}`
   const v1 = `${domain}/${V1_AGENT_LABEL}`
   if ((await deps.exec(LAUNCHCTL, ['enable', v1])).code !== 0) return { ok: false, failed: 'enable' }
-  // Fails when the agent is already loaded; kickstart covers that.
-  await deps.exec(LAUNCHCTL, ['bootstrap', domain, agentPlistPath(deps.home, V1_AGENT_LABEL)])
-  if ((await deps.exec(LAUNCHCTL, ['kickstart', v1])).code !== 0) return { ok: false, failed: 'kickstart' }
+  const bootstrapped = await deps.exec(LAUNCHCTL, ['bootstrap', domain, agentPlistPath(deps.home, V1_AGENT_LABEL)])
+  if (bootstrapped.code !== 0 && (await deps.exec(LAUNCHCTL, ['kickstart', v1])).code !== 0) {
+    return { ok: false, failed: 'kickstart' }
+  }
   const preview = `${domain}/${deps.previewLabel}`
-  await deps.exec(LAUNCHCTL, ['disable', preview])
+  if ((await deps.exec(LAUNCHCTL, ['disable', preview])).code !== 0) return { ok: false, failed: 'previewDisable' }
   await deps.exec(LAUNCHCTL, ['bootout', preview])
   deps.quit()
   return { ok: true }
