@@ -26,6 +26,7 @@ ROOT=$PWD
 APP="/Applications/Dictate Preview.app"
 BUNDLE_ID=com.leigh.dictate.preview
 AGENT_SERVICE="gui/$(id -u)/com.leigh.dictate.preview.keepalive"
+AGENT_PLIST="$HOME/Library/LaunchAgents/com.leigh.dictate.preview.keepalive.plist"
 V1_APP=/Applications/Dictate.app
 DATA="$HOME/Library/Application Support/Dictate Preview"
 LOG="$HOME/Library/Logs/Dictate Preview/dictate.log"
@@ -61,17 +62,23 @@ preview_running() { pgrep -f "$APP/Contents/MacOS/" >/dev/null; }
 v1_running() { pgrep -f "$V1_APP/Contents/MacOS/Dictate" >/dev/null; }
 
 # The preview's login agent (once the release build has run) restarts a killed preview, and its
-# copy would hold the single-instance lock this run's launches need. Unload it, and don't put it
-# back afterwards: that would start this e2e build at login. Opening the release build again
-# re-enables it (app/src/main/startup.ts).
+# copy would hold the single-instance lock this run's launches need. Disable it (so the next login
+# doesn't start whatever build is installed, which after this run is the e2e build) and unload it,
+# and don't put it back afterwards. Opening the release build again re-enables and loads it
+# (handOff in app/src/main/startup.ts). Run once, at the start.
 unload_preview_agent() {
-  launchctl print "$AGENT_SERVICE" >/dev/null 2>&1 || return 0
-  launchctl bootout "$AGENT_SERVICE" >/dev/null 2>&1 || true
-  say "Dictate Preview's login agent was unloaded; open the release Dictate Preview to re-enable it."
+  if launchctl print "$AGENT_SERVICE" >/dev/null 2>&1; then
+    launchctl disable "$AGENT_SERVICE" || fail "couldn't disable Dictate Preview's login agent ($AGENT_SERVICE)"
+    launchctl bootout "$AGENT_SERVICE" || fail "couldn't unload Dictate Preview's login agent ($AGENT_SERVICE)"
+    say "Dictate Preview's login agent was disabled and unloaded; open the release Dictate Preview to re-enable it."
+  elif [ -f "$AGENT_PLIST" ]; then
+    # Installed but not loaded right now: it would still load at the next login.
+    launchctl disable "$AGENT_SERVICE" || fail "couldn't disable Dictate Preview's login agent ($AGENT_SERVICE)"
+    say "Dictate Preview's login agent was disabled; open the release Dictate Preview to re-enable it."
+  fi
 }
 
 quit_preview() {
-  unload_preview_agent
   # Only when running: an AppleScript `tell` would otherwise launch it.
   preview_running || return 0
   osascript -e "tell application id \"$BUNDLE_ID\" to quit" >/dev/null 2>&1 || true
@@ -90,6 +97,7 @@ assert_unlocked() {
   fi
 }
 assert_unlocked
+unload_preview_agent
 
 # --- 1. Speech model (ruling R15): hard-link v1's, so the engine doesn't download 550 MB ----
 mkdir -p "$DATA/models"
