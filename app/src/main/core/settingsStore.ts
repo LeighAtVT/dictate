@@ -2,7 +2,7 @@
 // JSON-file-backed store for v2. Defaults and shape are the task-8 brief's.
 import { EventEmitter } from 'node:events'
 import fs from 'node:fs'
-import path from 'node:path'
+import { atomicWrite } from './atomicWrite'
 import { CLEANUP_PRESETS, EDIT_PRESETS, type ModelChoice } from './modelCatalog'
 import type { Style } from './styleRouter'
 
@@ -79,10 +79,6 @@ export class SettingsStore extends EventEmitter {
   }
 
   private writeAtomic(): void {
-    const dir = path.dirname(this.file)
-    fs.mkdirSync(dir, { recursive: true })
-    const tmp = path.join(dir, `.${path.basename(this.file)}.${process.pid}.${Date.now()}.tmp`)
-    fs.writeFileSync(tmp, JSON.stringify(this.settings, null, 2))
-    fs.renameSync(tmp, this.file)
+    atomicWrite(this.file, JSON.stringify(this.settings, null, 2))
   }
 }

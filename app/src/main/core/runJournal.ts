@@ -4,6 +4,7 @@
 // LaunchAgent, which hasn't landed in TS yet.
 import fs from 'node:fs'
 import path from 'node:path'
+import { atomicWrite } from './atomicWrite'
 
 export interface RunRecord {
   pid: number
@@ -71,10 +72,6 @@ export class RunJournal {
   }
 
   private write(record: RunRecord): void {
-    const dir = path.dirname(this.file)
-    fs.mkdirSync(dir, { recursive: true })
-    const tmp = path.join(dir, `.${path.basename(this.file)}.${process.pid}.${Date.now()}.tmp`)
-    fs.writeFileSync(tmp, JSON.stringify(record))
-    fs.renameSync(tmp, this.file)
+    atomicWrite(this.file, JSON.stringify(record))
   }
 }

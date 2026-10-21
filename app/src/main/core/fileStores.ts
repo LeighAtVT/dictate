@@ -3,17 +3,9 @@
 // shortcuts.ts (Task 6) own the pure parsing/matching this funnels through.
 import crypto from 'node:crypto'
 import fs from 'node:fs'
-import path from 'node:path'
+import { atomicWrite } from './atomicWrite'
 import type { Shortcut } from './shortcuts'
 import { parseVocabulary, VOCABULARY_SEED } from './vocabulary'
-
-function atomicWrite(file: string, content: string): void {
-  const dir = path.dirname(file)
-  fs.mkdirSync(dir, { recursive: true })
-  const tmp = path.join(dir, `.${path.basename(file)}.${process.pid}.${Date.now()}.tmp`)
-  fs.writeFileSync(tmp, content)
-  fs.renameSync(tmp, file)
-}
 
 /** Terms Whisper and the polisher should spell exactly. Stored one per line. */
 export function loadVocabulary(file: string): string[] {

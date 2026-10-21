@@ -2,7 +2,7 @@
 // only), kept on disk so "Copy last" and "Paste raw instead" survive a restart.
 // `bundleID` keeps v1's JSON key so a history.json written by v1 stays loadable.
 import fs from 'node:fs'
-import path from 'node:path'
+import { atomicWrite } from './atomicWrite'
 
 export interface HistoryEntry {
   /** ISO 8601, e.g. "2026-10-20T15:04:05Z". */
@@ -67,10 +67,6 @@ export class History {
   }
 
   private save(): void {
-    const dir = path.dirname(this.file)
-    fs.mkdirSync(dir, { recursive: true })
-    const tmp = path.join(dir, `.${path.basename(this.file)}.${process.pid}.${Date.now()}.tmp`)
-    fs.writeFileSync(tmp, JSON.stringify(this.entries))
-    fs.renameSync(tmp, this.file)
+    atomicWrite(this.file, JSON.stringify(this.entries))
   }
 }
