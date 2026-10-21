@@ -11,7 +11,10 @@
 //   preview's own item (`secret.set`). The marker's `key` is 'pending' from the moment the files
 //   are in place until v1 answers (Ruling R33): 'imported', or 'none' (no key, or the prompt was
 //   denied), after which it's never asked again. An engine that goes away mid-prompt, or a failed
-//   save, leaves it 'pending', and the next launch retries only the key step.
+//   save, leaves it 'pending', and the next launch retries only the key step; after 3 failed
+//   saves it gives up ('none', Ruling R39). The preview's own key is read by the caller and passed
+//   in (Ruling R37): a second secret.get overlapping index.ts's would get null from the engine's
+//   CachedSecret and cause a needless prompt that overwrites the key.
 //
 // v1's folder and preferences are only ever read: nothing here writes inside `v1Dir`.
 // Never log or report the key.
@@ -74,7 +77,12 @@ export interface DataOptions {
 
 export interface MigrationOptions extends DataOptions {
   engine: EngineApi
+  /** The preview's own key, as the caller's one secret.get read it; null or omitted when none. */
+  ownKey?: string | null
 }
+
+/** Failed `secret.set`s after which the key step stops retrying. */
+export const MAX_KEY_SAVE_FAILURES = 3
 
 /**
  * The whole migration: `copyV1Data`, then `finishMigration`. index.ts runs the two steps
@@ -83,7 +91,7 @@ export interface MigrationOptions extends DataOptions {
 export async function migrateFromV1(opts: MigrationOptions): Promise<MigrationReport> {
   const step = await copyV1Data(opts)
   if (step.status === 'alreadyMigrated' || step.status === 'failed') return step
-  const finished = await finishMigration(opts.dataDir, opts.engine)
+  const finished = await finishMigration(opts.dataDir, opts.engine, opts.ownKey ?? null)
   if (finished.status === 'failed') return finished
   return step.status === 'copied'
     ? { status: 'migrated', key: finished.key, ...step.data }
@@ -128,15 +136,24 @@ export async function copyV1Data(opts: DataOptions): Promise<DataStep> {
 
 /**
  * Step 2: move the key (`legacyKey` → `secret.set`) and record the result in the marker. Needs
- * the marker from step 1.
+ * the marker from step 1. `ownKey` is the preview's own key: when there is one, nothing is asked.
+ * It never reads the secret itself (Ruling R37).
  */
 export async function finishMigration(
   dataDir: string,
-  engine: EngineApi
+  engine: EngineApi,
+  ownKey: string | null
 ): Promise<{ status: 'done'; key: KeyState } | { status: 'failed'; error: string }> {
-  const key = await importV1Key(engine)
+  const marker = readMarker(dataDir) ?? {}
+  let failures = typeof marker['keySaveFailures'] === 'number' ? marker['keySaveFailures'] : 0
+  const outcome = (ownKey?.trim() ?? '').length > 0 ? 'imported' : await importV1Key(engine)
+  let key: KeyState = outcome === 'saveFailed' ? 'pending' : outcome
+  if (outcome === 'saveFailed') {
+    failures += 1
+    if (failures >= MAX_KEY_SAVE_FAILURES) key = 'none'
+  }
   try {
-    writeMarker(dataDir, { ...(readMarker(dataDir) ?? {}), key })
+    writeMarker(dataDir, { ...marker, key, ...(failures > 0 ? { keySaveFailures: failures } : {}) })
   } catch (error) {
     return { status: 'failed', error: `couldn't write ${MARKER_FILE}: ${message(error)}` }
   }
@@ -144,20 +161,22 @@ export async function finishMigration(
 }
 
 /**
- * The preview's own item first: a key already there (an earlier try that saved it, or one typed
- * in Settings) needs no prompt. Then v1's item, once. Any error means the engine went away or the
- * save failed, so it's 'pending' and retried; a null or blank reply is v1's answer, 'none'.
+ * v1's item, once. A null or blank reply is v1's answer, 'none'. An error there means the engine
+ * went away, so 'pending' and retried; a failed save is counted separately.
  */
-async function importV1Key(engine: EngineApi): Promise<KeyState> {
+async function importV1Key(engine: EngineApi): Promise<KeyState | 'saveFailed'> {
+  let key: string
   try {
-    const own = (await engine.request({ op: 'secret.get' })).value?.trim() ?? ''
-    if (own.length > 0) return 'imported'
-    const key = (await engine.request({ op: 'legacyKey' })).key?.trim() ?? ''
-    if (key.length === 0) return 'none'
+    key = (await engine.request({ op: 'legacyKey' })).key?.trim() ?? ''
+  } catch {
+    return 'pending'
+  }
+  if (key.length === 0) return 'none'
+  try {
     await engine.request({ op: 'secret.set', value: key })
     return 'imported'
   } catch {
-    return 'pending'
+    return 'saveFailed'
   }
 }
 

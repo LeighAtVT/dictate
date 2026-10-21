@@ -145,13 +145,18 @@ async function start(): Promise<void> {
   const engine = new Engine({ command: enginePath(), args })
 
   let apiKey: string | null = null
-  const refreshKey = async (): Promise<void> => {
+  /** Reads this app's own key into `apiKey`; false when the engine went away mid-read. */
+  const refreshKey = async (): Promise<boolean> => {
     try {
       apiKey = (await engine.request({ op: 'secret.get' })).value
+      return true
     } catch {
       // Engine went away mid-read; the next 'up' reads it again.
+      return false
     }
   }
+  /** The read started by the latest 'up'; the migration's key step waits for it (Ruling R37). */
+  let keyRead: Promise<boolean> = Promise.resolve(false)
   const makePolisher = (): Polisher => {
     const s = settings.get()
     return new Polisher({ fetch, apiKey: () => apiKey, model: s.cleanupModel, editModel: s.editModel })
@@ -344,7 +349,7 @@ async function start(): Promise<void> {
   engine.on('up', () => {
     record('engine up')
     pill.engineUp()
-    void refreshKey()
+    keyRead = refreshKey()
   })
   engine.on('down', () => {
     if (quitting) return
@@ -371,11 +376,16 @@ async function start(): Promise<void> {
     const { copied, model, settings: keys } = migration.data
     record(`migration: copied=${copied.join(',') || 'none'} model=${model} settings=${keys.length}`)
   }
+  // Ruling R37: one secret.get only. The engine answers an overlapping second read with null, so
+  // the key step uses the startup read ('up' fired inside engine.start()) instead of its own.
   if (migration.status === 'copied' || migration.status === 'keyPending') {
-    void finishMigration(dataDir, engine).then((result) => {
+    void keyRead.then(async (ok) => {
+      // Couldn't tell whether this app has a key: leave the marker 'pending' for the next launch.
+      if (!ok) return record('migration: key step skipped (key read failed)')
+      const result = await finishMigration(dataDir, engine, apiKey)
       if (result.status === 'failed') return record(`migration failed: ${result.error}`)
       record(`migration: key=${result.key}`)
-      void refreshKey()
+      await refreshKey()
     })
   }
 

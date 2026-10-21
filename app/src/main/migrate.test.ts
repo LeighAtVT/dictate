@@ -10,6 +10,7 @@ import {
   MARKER_FILE,
   MODEL_FILE,
   copyV1Data,
+  finishMigration,
   migrateFromV1,
   parseV1Defaults,
   readV1Defaults,
@@ -85,9 +86,11 @@ function snapshot(dir: string): Record<string, string> {
   return out
 }
 
-function keyEngine(key: string | null = KEY, previewKey: string | null = null): FakeEngine {
+function keyEngine(key: string | null = KEY): FakeEngine {
   const engine = new FakeEngine()
-  engine.setReply('secret.get', { value: previewKey })
+  // What a second, overlapping secret.get gets from the engine's CachedSecret while the first is
+  // still loading (Ruling R37): null, even when the preview has a key. The migration must not ask.
+  engine.setReply('secret.get', { value: null })
   engine.setReply('legacyKey', { key })
   engine.setReply('secret.set', {})
   return engine
@@ -124,8 +127,8 @@ describe('migrateFromV1', () => {
       pasteLanguage: 'en'
     })
 
-    // The preview's own item first (no prompt), then v1's item once, then save it.
-    expect(engine.calls.map((c) => c.op)).toEqual(['secret.get', 'legacyKey', 'secret.set'])
+    // v1's item once, then save it. The preview's own key comes in as `ownKey` (null here).
+    expect(engine.calls.map((c) => c.op)).toEqual(['legacyKey', 'secret.set'])
     expect(engine.callsFor('secret.set')).toEqual([{ op: 'secret.set', value: KEY }])
     expect(report).toMatchObject({
       status: 'migrated',
@@ -148,12 +151,21 @@ describe('migrateFromV1', () => {
     expect(marker().key).toBe('imported')
   })
 
-  it("doesn't prompt when the preview already has its own key", async () => {
-    const engine = keyEngine(KEY, 'sk-already-saved')
-    const report = await migrateFromV1({ v1Dir, dataDir, readDefaults: readDefaults(), engine })
+  it("doesn't prompt when the preview already has its own key, whatever a concurrent secret.get says (R37)", async () => {
+    const engine = keyEngine() // secret.get would answer null, as an overlapping read does
+    const report = await migrateFromV1({ v1Dir, dataDir, readDefaults: readDefaults(), engine, ownKey: 'sk-already-saved' })
     expect(report).toMatchObject({ status: 'migrated', key: 'imported' })
-    expect(engine.calls.map((c) => c.op)).toEqual(['secret.get'])
+    expect(engine.calls).toEqual([]) // no secret.get of its own, no legacyKey, no overwrite
     expect(marker().key).toBe('imported')
+  })
+
+  it('finishMigration never reads the secret itself; it only uses the ownKey it is given', async () => {
+    await copyV1Data({ v1Dir, dataDir, readDefaults: readDefaults() })
+    const engine = keyEngine()
+    expect(await finishMigration(dataDir, engine, 'sk-own')).toEqual({ status: 'done', key: 'imported' })
+    expect(engine.calls).toEqual([])
+    expect(await finishMigration(dataDir, engine, '   ')).toEqual({ status: 'done', key: 'imported' })
+    expect(engine.calls.map((c) => c.op)).toEqual(['legacyKey', 'secret.set']) // blank counts as no key
   })
 
   it('does nothing on a second run', async () => {
@@ -334,7 +346,7 @@ describe('migrateFromV1', () => {
       engine: again
     })
     expect(retry).toEqual({ status: 'keyRetried', key: 'imported' })
-    expect(again.calls.map((c) => c.op)).toEqual(['secret.get', 'legacyKey', 'secret.set'])
+    expect(again.calls.map((c) => c.op)).toEqual(['legacyKey', 'secret.set'])
     expect(defaultsRead).toBe(false)
     expect(fs.readFileSync(path.join(dataDir, 'history.json'), 'utf8')).toBe('[]')
     expect(marker()).toMatchObject({ key: 'imported', copied: ['vocabulary.txt', 'shortcuts.json', 'history.json'] })
@@ -347,19 +359,45 @@ describe('migrateFromV1', () => {
     expect(third.calls).toEqual([])
   })
 
-  it("marks key 'pending' when reading the preview's own item fails", async () => {
-    const engine = keyEngine()
-    engine.setError('secret.get', new Error('engine process exited before replying'))
-    expect(await migrateFromV1({ v1Dir, dataDir, readDefaults: readDefaults(), engine })).toMatchObject({ key: 'pending' })
-    expect(engine.callsFor('legacyKey')).toEqual([])
-  })
-
   it("marks key 'pending' when saving the key fails", async () => {
     const engine = keyEngine()
     engine.setError('secret.set', new Error('keychain write failed'))
     const report = await migrateFromV1({ v1Dir, dataDir, readDefaults: readDefaults(), engine })
     expect(report).toMatchObject({ status: 'migrated', key: 'pending' })
-    expect(marker().key).toBe('pending')
+    expect(marker()).toMatchObject({ key: 'pending', keySaveFailures: 1 })
+  })
+
+  it("gives up after 3 failed saves (key 'none'), so it doesn't prompt on every launch", async () => {
+    const failing = (): FakeEngine => {
+      const engine = keyEngine()
+      engine.setError('secret.set', new Error('keychain write failed'))
+      return engine
+    }
+    expect(await migrateFromV1({ v1Dir, dataDir, readDefaults: readDefaults(), engine: failing() })).toMatchObject({
+      key: 'pending'
+    })
+    expect(await migrateFromV1({ v1Dir, dataDir, readDefaults: readDefaults(), engine: failing() })).toEqual({
+      status: 'keyRetried',
+      key: 'pending'
+    })
+    expect(marker()).toMatchObject({ key: 'pending', keySaveFailures: 2 })
+    expect(await migrateFromV1({ v1Dir, dataDir, readDefaults: readDefaults(), engine: failing() })).toEqual({
+      status: 'keyRetried',
+      key: 'none'
+    })
+    expect(marker()).toMatchObject({ key: 'none', keySaveFailures: 3 })
+    const after = keyEngine()
+    expect(await migrateFromV1({ v1Dir, dataDir, readDefaults: readDefaults(), engine: after })).toEqual({
+      status: 'alreadyMigrated'
+    })
+    expect(after.calls).toEqual([])
+  })
+
+  it("doesn't count an engine exit during the prompt as a failed save", async () => {
+    const engine = keyEngine()
+    engine.setError('legacyKey', new Error('engine process exited before replying'))
+    await migrateFromV1({ v1Dir, dataDir, readDefaults: readDefaults(), engine })
+    expect(marker().keySaveFailures ?? 0).toBe(0)
   })
 
   it('never puts the key in the report or the marker', async () => {
