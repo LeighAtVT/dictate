@@ -58,6 +58,7 @@ describe('setSettings validation', () => {
     ['an override that is not a style', { overrides: { 'com.apple.mail': 'loud' } }],
     ['an override with a blank bundle ID', { overrides: { '': 'raw' } }],
     ['overrides as an array', { overrides: ['raw'] }],
+    ['an override for "__proto__"', { overrides: JSON.parse('{"__proto__": "raw"}') }],
     ['a model with a blank ID', { cleanupModel: { id: '   ', thinking: 'modelDefault' } }],
     ['a model with an unknown thinking level', { cleanupModel: { id: 'acme/m', thinking: 'max' } }],
     ['a model with extra fields', { editModel: { id: 'acme/m', thinking: 'off', key: 'x' } }],
@@ -152,6 +153,8 @@ describe('vocabulary and shortcuts', () => {
     ['not an array', 'Acme'],
     ['a non-string term', ['Acme', 3]],
     ['a term over 500 characters', ['a'.repeat(501)]],
+    ['a term with a newline inside', ['Acme\nZephyr']],
+    ['a term with a carriage return', ['Acme\r']],
     ['over 10,000 terms', Array.from({ length: 10_001 }, () => 'a')]
   ])('rejects vocabulary that is %s', async (_name, terms) => {
     const deps = fakeDeps()
@@ -170,6 +173,13 @@ describe('vocabulary and shortcuts', () => {
     ['missing text', [{ id: 'a', phrase: 'p' }]],
     ['a blank id', [{ id: '', phrase: 'p', text: 't' }]],
     ['a null entry', [null]],
+    [
+      'two with the same id',
+      [
+        { id: 'a', phrase: 'one', text: '1' },
+        { id: 'a', phrase: 'two', text: '2' }
+      ]
+    ],
     ['text over 20,000 characters', [{ id: 'a', phrase: 'p', text: 't'.repeat(20_001) }]]
   ])('rejects shortcuts that are %s', async (_name, list) => {
     const deps = fakeDeps()

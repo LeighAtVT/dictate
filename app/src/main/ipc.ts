@@ -104,7 +104,10 @@ function validOverrides(v: unknown): Record<string, Style> {
   if (entries.length > MAX_OVERRIDES) throw new InvalidInput('overrides')
   const out: Record<string, Style> = {}
   for (const [id, style] of entries) {
-    if (id.trim().length === 0 || id.length > MAX_BUNDLE_ID || CONTROL.test(id)) throw new InvalidInput('app ID')
+    // '__proto__' would be assigned to the prototype below and silently vanish, so refuse it.
+    if (id.trim().length === 0 || id.length > MAX_BUNDLE_ID || CONTROL.test(id) || id === '__proto__') {
+      throw new InvalidInput('app ID')
+    }
     out[id] = oneOf(style, STYLES, 'style')
   }
   return out
@@ -151,17 +154,25 @@ export function validKey(v: unknown): string {
   return key
 }
 
+/** One term per line on disk, so a term with a line break (or any control character) is refused. */
 export function validTerms(v: unknown): string[] {
   if (!Array.isArray(v) || v.length > MAX_TERMS) throw new InvalidInput('vocabulary')
-  return v.map((term) => boundedString(term, MAX_TERM, 'vocabulary term'))
+  return v.map((term) => {
+    const valid = boundedString(term, MAX_TERM, 'vocabulary term')
+    if (CONTROL.test(valid)) throw new InvalidInput('vocabulary term')
+    return valid
+  })
 }
 
+/** Each ID once: the Shortcuts tab edits and removes rows by ID. */
 export function validShortcuts(v: unknown): Shortcut[] {
   if (!Array.isArray(v) || v.length > MAX_SHORTCUTS) throw new InvalidInput('shortcuts')
+  const seen = new Set<string>()
   return v.map((s) => {
     if (!isRecord(s)) throw new InvalidInput('shortcut')
     const id = boundedString(s.id, MAX_SHORTCUT_ID, 'shortcut ID')
-    if (id.length === 0) throw new InvalidInput('shortcut ID')
+    if (id.length === 0 || seen.has(id)) throw new InvalidInput('shortcut ID')
+    seen.add(id)
     return {
       id,
       phrase: boundedString(s.phrase, MAX_PHRASE, 'shortcut phrase'),
