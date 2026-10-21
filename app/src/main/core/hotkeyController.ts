@@ -23,9 +23,25 @@
 // it -- and while it's set, every `key`/`otherKey` event is thrown away
 // (:70/:79), so the hold-to-talk key would go dead with no sign why. For the
 // hold path, `holdActive`/`modes.begin`/`onModeChange` must likewise not
-// reflect a begin that never actually happened, but the state machine's own
-// transitions (not gated on this) still drive the matching release to a
-// harmless no-op once the dropped begin's `target` never got set.
+// reflect a begin that never actually happened.
+//
+// Review round 3 (ruling R12): R11's hold-path fix left `holdActive` false
+// on a dropped begin, but `HotkeyStateMachine` isn't gated on `canBegin` at
+// all -- it still moves to `holding`, then `tapped`/`lockedDown`/`locked` on
+// release, with its own timers and follow-up actions (a stale double-tap
+// timeout, a lock) still firing through `onAction` for a recording that
+// never started. With `holdActive` false, a toggle shortcut pressed in the
+// meantime is no longer blocked either, so it can start a real recording
+// that the stale timer then cancels out from under it. The fix pushes the
+// state machine straight to its `cancelled` state on a dropped begin (the
+// same state `otherKeyDown` mid-hold produces), which only reacts to
+// `keyUp` (back to `idle`) -- no timer, no lock, no stale-mode finish.
+//
+// Review round 3 (ruling R13): a toggle (or hold) begin the pipeline
+// *accepts* (`canBegin()` true) can still end without ever starting a
+// recording -- secure input, the model still loading, a dead mic. `onAction`
+// is fire-and-forget, so the controller has no way to learn that on its own;
+// `pipelineSettled` is how the eventual wiring (Task 11) tells it.
 import type { EngineEvent, Modifier, ModeAction } from '../../shared/protocol'
 import { HotkeyStateMachine, type HotkeyAction, type HotkeyEvent } from './hotkeyStateMachine'
 import { ModeTracker, type DictationMode } from './modes'
@@ -63,6 +79,21 @@ export class HotkeyController {
     this.schedule = schedule
     this.canBegin = canBegin
     this.modes = new ModeTracker(noteModifier)
+  }
+
+  /**
+   * Review round 3 (ruling R13): call this on every pipeline `idle`/`notice` state, with whether
+   * the pipeline is still listening (recording) afterward. A begin the pipeline accepted but
+   * that never actually started recording (secure input, the model still loading, a dead mic)
+   * leaves `toggleMode`/`holdActive` set with nothing behind them, since `onAction` never reports
+   * back. When `listening` is false, this clears both so the talk key and the shortcut toggle
+   * work again; it's a no-op while a real recording is still in progress. Not wired up yet --
+   * that lands with Task 11's production wiring.
+   */
+  pipelineSettled(listening: boolean): void {
+    if (listening) return
+    this.toggleMode = null
+    this.holdActive = false
   }
 
   /** For a hotkey change or engine restart: cancels any recording in progress, as HotkeyMonitor.hotkey.didSet does. */
@@ -148,18 +179,22 @@ export class HotkeyController {
 
   private dispatch(event: HotkeyEvent, held: Modifier[] = []): void {
     const action = this.machine.handle(event)
-    // Review round 2 (R11): the hold path's own timing state machine isn't gated on canBegin
-    // (it has no notion of the pipeline), so a begin it reports still fires onAction -- the
-    // pipeline's own drop check (Pipeline.acceptsBegin's handle()-side twin) makes that a
-    // harmless no-op. But holdActive/modes.begin/onModeChange must not reflect a begin that
-    // never actually happened, or the matching release would read a stale mode.
-    const begins = action === 'beginRecording' && this.canBegin()
-    if (begins) {
+    if (action === 'beginRecording' && !this.canBegin()) {
+      // Review round 3 (R12): don't leave the state machine mid-cycle (holding/tapped/locked)
+      // for a begin the pipeline will drop -- push it straight to `cancelled` (the same state
+      // otherKeyDown mid-hold produces), which only reacts to keyUp (back to idle). The returned
+      // action from this synthetic event is `cancelRecording` (cancelling a recording that never
+      // started), so it's discarded rather than sent to onAction -- and the real `beginRecording`
+      // above was never sent either, matching the comment on Pipeline.acceptsBegin.
+      this.machine.handle({ t: 'otherKeyDown' })
+      return
+    }
+    if (action === 'beginRecording') {
       this.modes.begin(held) // modifiers already down count too
       this.holdActive = true
     }
     if (action !== 'none') this.onAction(action, this.modes.mode)
-    if (begins && this.modes.mode !== 'dictate') this.onModeChange?.(this.modes.mode)
+    if (action === 'beginRecording' && this.modes.mode !== 'dictate') this.onModeChange?.(this.modes.mode)
     if (action === 'finishRecording' || action === 'cancelRecording') this.holdActive = false
     if (this.machine.awaitingSecondTap) {
       this.schedule(() => this.dispatch({ t: 'timeout', at: this.now() }), HotkeyStateMachine.DOUBLE_TAP_WINDOW * 1000)

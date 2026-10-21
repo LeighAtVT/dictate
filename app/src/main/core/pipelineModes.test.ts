@@ -210,7 +210,13 @@ describe('Pipeline modes', () => {
   // the note itself -- addHistory swallows write errors (matching v1's History.swift `try?`), so
   // the note still gets saved and reported normally.
   it('a history save failure still gives the normal note outcome', async () => {
-    const throwingHistory = { add: () => { throw new Error('disk full') } } as unknown as History
+    let addCalls = 0
+    const throwingHistory = {
+      add: () => {
+        addCalls++
+        throw new Error('disk full')
+      }
+    } as unknown as History
     engine.setReply('context', slackContext)
     const deps: PipelineDeps = {
       engine,
@@ -228,6 +234,10 @@ describe('Pipeline modes', () => {
     const [outcome] = await run(p, 'note')
     expect(outcome).toEqual({ type: 'noted', destination: 'tasks' })
     expect(notes.saved).toEqual(['Polished.'])
+    // Proves the swallow actually sits where `addHistory` calls `history.add` -- if `keepHistory`
+    // ever defaulted to false, this test would pass without exercising it at all (review round 3,
+    // Minor 3).
+    expect(addCalls).toBe(1)
   })
 
   // MARK: Language

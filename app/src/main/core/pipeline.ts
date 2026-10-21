@@ -151,10 +151,11 @@ export class Pipeline {
     if (action === 'finishRecording') this.pendingFinishes++
     const result = this.chain.then(() => this.process(action, mode))
     if (action === 'finishRecording') {
-      // `.finally` re-throws whatever `result` rejected with (it shouldn't, after the catch-all
-      // below, but a throwing `onState` could still slip one through -- see Minor 1). `.catch`
-      // swallows that so it never surfaces as an unhandled rejection; the counter still comes
-      // back down either way.
+      // `process` can't actually reject any more -- the catch-all below uses `safeDone`, so every
+      // `done` call it can reach is guarded against a throwing `onState`. `.finally` would
+      // re-throw if `result` ever did reject anyway, and `.catch` here is purely defensive against
+      // that (e.g. a future code path that bypasses the catch-all), so it never surfaces as an
+      // unhandled rejection. The counter still comes back down either way.
       void result.finally(() => {
         this.pendingFinishes--
       }).catch(() => {})
@@ -222,6 +223,9 @@ export class Pipeline {
     try {
       return this.done(outcome, notice)
     } catch {
+      // Swallowing this fits the never-reject contract, but it also means a broken renderer
+      // channel fails silently on every dictation from here on. If a log dependency is ever
+      // added to PipelineDeps, log once here (review round 3, Minor 2) -- not adding one now.
       return outcome
     }
   }

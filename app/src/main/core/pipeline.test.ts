@@ -540,9 +540,10 @@ describe('Pipeline', () => {
   })
 
   // Added for review round 2 (Minor 1): a throwing onState (e.g. a destroyed webContents) must
-  // not turn into a rejected `process`/unhandled rejection -- the catch-all's own done() call is
-  // guarded, and `handle`'s pendingFinishes bookkeeping `.catch()`s any rejection that still gets
-  // through regardless of where it came from.
+  // not turn into a rejected `process`. This proves `safeDone` (the catch-all's guarded done()
+  // call): without it, the rejection from `notify` would reach `await dictate(p)` below and fail
+  // this test. It does not exercise `handle`'s `.finally().catch()` -- with `safeDone` in place,
+  // `process` can no longer reject, so that `.catch` is purely defensive (review round 3, Minor 1).
   it('a throwing onState does not reject the pipeline, and the next dictation works', async () => {
     engine.setError('paste', new Error('paste boom'))
     engine.setError('copy', new Error('copy boom'))
@@ -568,7 +569,13 @@ describe('Pipeline', () => {
   // into a reported `failed` outcome -- v1's History.swift swallows write errors with `try?`, and
   // addHistory now does the same.
   it('a history save failure still gives the normal pasted outcome', async () => {
-    const throwingHistory = { add: () => { throw new Error('disk full') } } as unknown as History
+    let addCalls = 0
+    const throwingHistory = {
+      add: () => {
+        addCalls++
+        throw new Error('disk full')
+      }
+    } as unknown as History
     const deps: PipelineDeps = {
       engine,
       polisher: () => polisher,
@@ -583,6 +590,10 @@ describe('Pipeline', () => {
     }
     const p = new Pipeline(deps)
     expect(await dictate(p)).toEqual({ type: 'inserted', text: 'Polished.' })
+    // Proves the swallow actually sits where `addHistory` calls `history.add` -- if `keepHistory`
+    // ever defaulted to false, this test would pass without exercising it at all (review round 3,
+    // Minor 3).
+    expect(addCalls).toBe(1)
   })
 
   // Added by the task-10 brief, step 1: history is opt-in.
