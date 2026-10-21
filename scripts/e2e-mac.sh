@@ -13,6 +13,9 @@
 # runs this script (the terminal), so the synthetic Fn press can be posted. TextEdit is driven
 # through System Events (the same Accessibility grant), so no Automation permission for TextEdit.
 #
+# It presses Fn only with the screen unlocked and its own scratch document as TextEdit's front
+# window, and stops the app before it can paste if focus moves while Fn is held.
+#
 # While it runs, v1 Dictate is quit (both apps listen to Fn) and the clipboard is in use. On exit,
 # pass or fail, it quits the preview, closes its TextEdit documents without saving, puts back the
 # clipboard and the preview's shortcuts/history files, and reopens v1 if it was running.
@@ -131,6 +134,8 @@ close_document() {
 
 cleanup() {
   local status=$?
+  # A second Ctrl-C (or a TERM) must not cut the clean-up short.
+  trap '' INT TERM HUP
   set +e
   quit_preview
   for doc in "${DOCS[@]+"${DOCS[@]}"}"; do close_document "$doc"; done
@@ -143,10 +148,21 @@ cleanup() {
   "$TOOLS/clipboard-snapshot" restore "$WORK/clipboard.plist"
   if [ "$V1_WAS_RUNNING" = 1 ] && ! v1_running; then open -a "$V1_APP"; fi
   rm -rf "$WORK"
-  if [ "$status" = 0 ]; then say PASS; else say "FAILED (exit $status)"; fi
+  # PASS only when the whole script ran: after a signal, `$?` in this trap can still be 0.
+  if [ "$status" = 0 ] && [ "$E2E_DONE" = 1 ]; then
+    say PASS
+  else
+    [ "$status" = 0 ] && status=1
+    say "FAILED (exit $status)"
+  fi
   exit "$status"
 }
+E2E_DONE=0
 trap cleanup EXIT
+# Exit with the conventional status for the signal, so the EXIT trap never sees 0.
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
 
 # --- 4. Only one app may listen to Fn: quit v1 (ruling R16) ------------------------------------
 if v1_running; then
@@ -196,17 +212,39 @@ new_document() {
   fail "TextEdit didn't open $DOC"
 }
 
+# Succeeds only when TextEdit is the frontmost app AND its front window is this run's scratch
+# document, so the paste can't land in another app or in one of the user's own TextEdit documents.
+# On failure, sets FOCUS to what is in front instead.
+doc_in_front() {
+  local app win
+  app=$(osascript -e 'tell application "System Events" to get bundle identifier of first process whose frontmost is true' 2>&1)
+  if [ "$app" != com.apple.TextEdit ]; then
+    FOCUS="app $app"
+    return 1
+  fi
+  win=$(textedit_ui 'name of window 1')
+  if [[ "$win" != "$DOC"* ]]; then
+    FOCUS="TextEdit window \"$win\""
+    return 1
+  fi
+}
+
 # Holds Fn for 1.5 s with the document in front; sets DOC_TEXT to the document's text afterwards.
 dictate_into_document() {
-  local since outcome front
+  local since outcome
   textedit_ui 'set frontmost to true' "perform action \"AXRaise\" of ($(window_of "$DOC"))" >/dev/null
   sleep 0.5
   printf %s "$SENTINEL" | pbcopy
   since=$(log_lines)
   assert_unlocked
-  front=$(osascript -e 'tell application "System Events" to get bundle identifier of first process whose frontmost is true')
-  [ "$front" = com.apple.TextEdit ] || fail "TextEdit isn't in front ($front is), so the paste would land elsewhere"
+  doc_in_front || fail "$DOC isn't the front window ($FOCUS is), so the paste would land elsewhere"
   "$TOOLS/press-fn" 1.5
+  # The paste comes after transcription (under a second); if focus moved while Fn was held,
+  # kill the app at once so it can't paste into whatever is in front now.
+  if ! doc_in_front; then
+    pkill -9 -f "$APP/Contents/MacOS/" || true
+    fail "focus moved to $FOCUS while Fn was held; stopped Dictate Preview before it could paste"
+  fi
   if ! wait_for_log "recording started" "$since" 5; then
     fail "BLOCKED: the synthetic Fn press never started a recording (no 'recording started' in $LOG). The process running this script needs Accessibility to post key events."
   fi
@@ -264,3 +302,5 @@ if log_since "$RUN_START" | grep -F -e "$PASS1_TEXT" -e "Line one" -e "Line two"
   fail "dictated text appeared in $LOG"
 fi
 say "log ok: no dictated text in dictate.log"
+
+E2E_DONE=1
