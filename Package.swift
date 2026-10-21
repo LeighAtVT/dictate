@@ -16,11 +16,21 @@ let package = Package(
         ),
         .target(name: "DictateCore", dependencies: ["whisper"]),
         .executableTarget(name: "DictateApp", dependencies: ["DictateCore"]),
-        .executableTarget(name: "DictateEngine", dependencies: ["DictateCore"], path: "native/mac/DictateEngine"),
+        .target(name: "EngineKit", dependencies: ["DictateCore"], path: "native/mac/EngineKit"),
+        .executableTarget(
+            name: "DictateEngine",
+            dependencies: ["DictateCore", "EngineKit"],
+            path: "native/mac/DictateEngine"
+        ),
         .testTarget(
             name: "DictateCoreTests",
             dependencies: ["DictateCore", "whisper"],
             resources: [.copy("Fixtures")]
+        ),
+        .testTarget(
+            name: "DictateEngineTests",
+            dependencies: ["EngineKit"],
+            path: "native/mac/Tests/DictateEngineTests"
         ),
     ]
 )
