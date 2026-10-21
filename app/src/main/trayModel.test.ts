@@ -4,7 +4,10 @@ import {
   ENGINE_FAILED,
   MODEL_FAILED,
   MODEL_PREPARING,
+  PAUSE_V1,
+  SWITCH_BACK_TO_V1,
   historyTitle,
+  sideBySide,
   modelStatusLine,
   phaseAfter,
   trayIcon,
@@ -26,7 +29,8 @@ const base: TrayState = {
   permissionsOK: true,
   hasKey: true,
   modelStatus: null,
-  engineFailed: false
+  engineFailed: false,
+  sideBySide: null
 }
 
 /** One line per item: labels, `---` for separators, `[x]` for disabled, `>` for submenus. */
@@ -142,6 +146,43 @@ describe('trayMenu', () => {
     const history = trayMenu({ ...base, recent: [entry(long)] }).find((i) => i.kind === 'submenu')
     const row = history?.kind === 'submenu' ? history.items[0] : null
     expect(row).toMatchObject({ kind: 'action', label: `${'x'.repeat(57)}…`, payload: long })
+  })
+})
+
+describe('side by side with v1 (Task 13)', () => {
+  it('shows "Pause old Dictate while testing" just above Quit while v1 is active', () => {
+    expect(outline(trayMenu({ ...base, sideBySide: 'pause' })).slice(-3)).toEqual([
+      '---',
+      'Pause old Dictate while testing',
+      'Quit Dictate Preview (Command+Q)'
+    ])
+    expect(PAUSE_V1).toBe('Pause old Dictate while testing')
+  })
+
+  it('shows "Switch back to old Dictate" once v1 is paused', () => {
+    const menu = trayMenu({ ...base, sideBySide: 'switchBack' })
+    expect(outline(menu).slice(-2)).toEqual(['Switch back to old Dictate', 'Quit Dictate Preview (Command+Q)'])
+    expect(SWITCH_BACK_TO_V1).toBe('Switch back to old Dictate')
+    expect(menu.at(-2)).toMatchObject({ kind: 'action', action: 'switchBackToV1', enabled: true })
+    expect(trayMenu({ ...base, sideBySide: 'pause' }).at(-2)).toMatchObject({ kind: 'action', action: 'pauseV1' })
+  })
+
+  it('shows neither when there is no v1 to switch with', () => {
+    expect(outline(trayMenu(base)).filter((l) => l.includes('old Dictate'))).toEqual([])
+  })
+
+  it('offers Pause while v1 is running or its agent is enabled, and Switch back otherwise', () => {
+    const installed = { installed: true, running: false, agentEnabled: false }
+    expect(sideBySide({ ...installed, running: true })).toBe('pause')
+    expect(sideBySide({ ...installed, agentEnabled: true })).toBe('pause')
+    expect(sideBySide({ ...installed, running: true, agentEnabled: true })).toBe('pause')
+    expect(sideBySide(installed)).toBe('switchBack')
+    // Running from somewhere without its agent plist still counts as running.
+    expect(sideBySide({ installed: false, running: true, agentEnabled: false })).toBe('pause')
+    // Nothing to switch back to.
+    expect(sideBySide({ installed: false, running: false, agentEnabled: false })).toBeNull()
+    // Not probed yet, or the final build (which is v1's replacement).
+    expect(sideBySide(null)).toBeNull()
   })
 })
 

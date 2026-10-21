@@ -2,11 +2,14 @@
 // pipeline (core/), and the pipeline to the pill (pill.ts, pillPresenter.ts) and the menu-bar item
 // (tray.ts, trayModel.ts), and the Settings and Onboarding windows (windows.ts) to their API
 // (ipc.ts), the way v1's `AppDelegate.applicationDidFinishLaunching` does
-// (Sources/DictateApp/AppDelegate.swift). Logic lives in those modules; this file only connects
-// them. Never log dictated text, the API key, or request bodies here.
+// (Sources/DictateApp/AppDelegate.swift), plus the login agent hand-off (startup.ts), the
+// first-launch copy of v1's data (migrate.ts), and pausing or switching back to v1
+// (side-by-side.ts). Logic lives in those modules; this file only connects them. Never log
+// dictated text, the API key, or request bodies here.
 import { app, ipcMain, powerMonitor, shell } from 'electron'
 import fs from 'node:fs'
 import { join } from 'node:path'
+import { atomicWrite } from './core/atomicWrite'
 import { EventLog } from './core/eventLog'
 import { loadShortcuts, loadVocabulary, saveShortcuts, saveVocabulary } from './core/fileStores'
 import { History } from './core/history'
@@ -18,16 +21,20 @@ import { RunJournal } from './core/runJournal'
 import { SettingsStore } from './core/settingsStore'
 import { Engine } from './engine'
 import { createHandlers, distinctBundleIDs, registerIpc } from './ipc'
+import { copyV1Data, finishMigration, readV1Defaults, type DataStep } from './migrate'
+import { execFileExec, pauseV1, switchBackToV1, v1Status, type V1Status } from './side-by-side'
+import { handOff } from './startup'
 import { isSettingsTab, SETTINGS_CHANGED } from '../shared/dictate'
 import { AppStatus, outcomeLogLine } from './appStatus'
 import { PillWindow } from './pill'
 import { PillPresenter } from './pillPresenter'
 import { TrayController } from './tray'
-import { phaseAfter, trayIcon, type DictationPhase } from './trayModel'
+import { phaseAfter, sideBySide, trayIcon, type DictationPhase } from './trayModel'
 import { variantFor } from './variant'
 import { AppWindows } from './windows'
 
-const variant = variantFor(app.getName(), app.getPath('home'))
+const home = app.getPath('home')
+const variant = variantFor(app.getName(), home)
 // Before `ready` and before the single-instance lock (which lives in userData): Electron's own
 // files go in the variant's data folder rather than a folder named after package.json.
 app.setPath('userData', variant.dataDir)
@@ -35,11 +42,51 @@ app.setPath('userData', variant.dataDir)
 // Menu-bar only app (LSUIElement): closing the pill or any window never quits.
 app.on('window-all-closed', () => {})
 
-if (!app.requestSingleInstanceLock()) {
-  app.quit()
-} else {
-  void app.whenReady().then(start)
+const events = new EventLog(variant.logFile)
+const record = (message: string): void => {
+  try {
+    events.write(message)
+  } catch {
+    // Logging must never break dictation.
+  }
 }
+const uid = process.getuid?.() ?? 0
+
+// v1's handOffToAgentIfNeeded: run under the login agent, which also takes the single-instance lock.
+void handOff({
+  label: variant.agentLabel,
+  isPackaged: app.isPackaged,
+  executable: process.execPath,
+  env: process.env,
+  home,
+  uid,
+  exec: execFileExec,
+  requestLock: () => app.requestSingleInstanceLock(),
+  releaseLock: () => app.releaseSingleInstanceLock(),
+  readFile: (file) => {
+    try {
+      return fs.readFileSync(file, 'utf8')
+    } catch {
+      return null
+    }
+  },
+  writeFile: atomicWrite,
+  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  now: () => Date.now(),
+  log: record
+})
+  .catch((error: unknown) => {
+    // Never expected (exec doesn't reject); keep running as the one copy rather than sit idle.
+    record(`handoff failed: ${error instanceof Error ? error.message : String(error)}`)
+    return app.requestSingleInstanceLock() ? ('run' as const) : ('quit' as const)
+  })
+  .then((result) => {
+    if (result === 'quit') return app.quit()
+    void app
+      .whenReady()
+      .then(start)
+      .catch((error: unknown) => record(`start failed: ${error instanceof Error ? error.message : String(error)}`))
+  })
 
 function enginePath(): string {
   // Packaged: Contents/Resources (resourcesPath) and Contents/MacOS are siblings.
@@ -47,17 +94,9 @@ function enginePath(): string {
   return join(app.getAppPath(), '..', '.build', 'debug', 'dictate-engine')
 }
 
-function start(): void {
+async function start(): Promise<void> {
   const dataDir = variant.dataDir
   fs.mkdirSync(dataDir, { recursive: true })
-  const events = new EventLog(variant.logFile)
-  const record = (message: string): void => {
-    try {
-      events.write(message)
-    } catch {
-      // Logging must never break dictation.
-    }
-  }
 
   // --- Run journal (v1's startJournal) -----------------------------------------------------
   const journal = new RunJournal(join(dataDir, 'run.json'))
@@ -67,6 +106,18 @@ function start(): void {
   powerMonitor.on('shutdown', () => {
     exitReason = 'logout'
   })
+
+  // --- First launch: v1's files and settings, before the stores read them (preview only) ------
+  // The key half runs once the engine is up (below), so a Keychain prompt never holds up startup.
+  let migration: DataStep = { status: 'alreadyMigrated' }
+  if (!variant.isFinal) {
+    migration = await copyV1Data({
+      v1Dir: join(home, 'Library', 'Application Support', 'Dictate'),
+      dataDir,
+      readDefaults: () => readV1Defaults(execFileExec)
+    })
+    if (migration.status === 'failed') record(`migration failed: ${migration.error}`)
+  }
 
   // --- Stores --------------------------------------------------------------------------------
   const settings = new SettingsStore(join(dataDir, 'settings.json'))
@@ -111,7 +162,7 @@ function start(): void {
     notes: new NoteSaver({
       fetch,
       token: () => NoteSaver.defaultToken(),
-      file: join(app.getPath('home'), 'Documents', 'Dictate Notes.md')
+      file: join(home, 'Documents', 'Dictate Notes.md')
     }),
     modelReady: () => status.modelReady,
     hasKey: () => apiKey !== null && apiKey.length > 0,
@@ -183,6 +234,24 @@ function start(): void {
     (sender) => windows.owns(sender)
   )
 
+  // --- Side by side with v1 (preview only): which item the tray shows -------------------------
+  let v1: V1Status | null = null
+  let probing = false
+  const probeV1 = (): void => {
+    if (variant.isFinal || probing) return
+    probing = true
+    v1Status({ exec: execFileExec, uid, home, exists: (file) => fs.existsSync(file) })
+      .then((status) => {
+        v1 = status
+      })
+      .catch(() => {})
+      .finally(() => {
+        probing = false
+      })
+  }
+  probeV1()
+  setInterval(probeV1, 10_000)
+
   const iconDir = app.isPackaged ? join(process.resourcesPath, 'tray') : join(app.getAppPath(), 'resources', 'tray')
   const tray = new TrayController(
     iconDir,
@@ -193,7 +262,8 @@ function start(): void {
       permissionsOK: status.permissionsOK,
       hasKey: apiKey !== null && apiKey.length > 0,
       modelStatus: status.modelStatus,
-      engineFailed: status.engineFailed
+      engineFailed: status.engineFailed,
+      sideBySide: sideBySide(v1)
     }),
     {
       openOnboarding,
@@ -208,6 +278,25 @@ function start(): void {
       },
       copyEntry: (text) => {
         if (text !== undefined) engine.request({ op: 'copy', text }).catch(() => {})
+      },
+      pauseV1: () => {
+        void pauseV1({ exec: execFileExec, uid }).then((r) => {
+          record(r.ok ? 'side-by-side: paused v1' : `side-by-side: pause failed at ${r.failed}`)
+          probeV1()
+        })
+      },
+      switchBackToV1: () => {
+        record('side-by-side: switching back to v1')
+        void switchBackToV1({
+          exec: execFileExec,
+          uid,
+          home,
+          previewLabel: variant.agentLabel,
+          quit: () => app.quit()
+        }).then((r) => {
+          if (!r.ok) record(`side-by-side: switch back failed at ${r.failed}`)
+          probeV1()
+        })
       },
       quit: () => app.quit()
     }
@@ -269,6 +358,17 @@ function start(): void {
   engine.start()
   engine.request({ op: 'setHotkey', key: settings.get().hotkey }).catch(() => {})
 
+  // The other half of the first launch: v1's key, once (one Keychain prompt), then the marker.
+  if (migration.status === 'copied') {
+    const { copied, model, settings: keys } = migration.data
+    record(`migration: copied=${copied.join(',') || 'none'} model=${model} settings=${keys.length}`)
+    void finishMigration(dataDir, migration.data, engine).then((report) => {
+      if (report.status === 'failed') return record(`migration failed: ${report.error}`)
+      record(`migration: done keyImported=${report.status === 'migrated' && report.keyImported}`)
+      void refreshKey()
+    })
+  }
+
   settings.on('change', (s, changed) => {
     if (changed.includes('cleanupModel') || changed.includes('editModel')) polisher = makePolisher()
     if (changed.includes('hotkey')) {
@@ -300,7 +400,7 @@ function start(): void {
 
   if (previous) {
     record(`previous run ended unexpectedly (pid=${previous.pid} launched ${previous.launchedAt})`)
-    const reports = join(app.getPath('home'), 'Library', 'Logs', 'DiagnosticReports')
+    const reports = join(home, 'Library', 'Logs', 'DiagnosticReports')
     for (const file of RunJournal.crashReports(reports, new Date(previous.launchedAt))) record(`crash report: ${file}`)
     setTimeout(() => pill.restartNotice(), 1000)
   }

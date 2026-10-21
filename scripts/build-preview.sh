@@ -8,14 +8,19 @@
 #   scripts/build-preview.sh --e2e    adds the engine's test-audio hook (-D DICTATE_E2E, see
 #                                     native/mac/EngineKit/Speech.swift) in its own build folder,
 #                                     installs, and doesn't open: scripts/e2e-mac.sh launches it
+#   scripts/build-preview.sh --no-open release build, installed but not opened (the first launch
+#                                     copies v1's data and asks for the Keychain, so a person
+#                                     should be there for it)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 E2E=0
+OPEN=1
 for arg in "$@"; do
   case "$arg" in
-    --e2e) E2E=1 ;;
-    *) echo "usage: $0 [--e2e]" >&2; exit 2 ;;
+    --e2e) E2E=1; OPEN=0 ;;
+    --no-open) OPEN=0 ;;
+    *) echo "usage: $0 [--e2e] [--no-open]" >&2; exit 2 ;;
   esac
 done
 
@@ -73,6 +78,8 @@ rm -rf "$INSTALLED"
 cp -R "$APP" "$INSTALLED"
 if [ "$E2E" = 1 ]; then
   echo "Installed $INSTALLED (e2e build, not opened)"
+elif [ "$OPEN" = 0 ]; then
+  echo "Installed $INSTALLED (not opened)"
 else
   open "$INSTALLED"
   echo "Installed $INSTALLED"

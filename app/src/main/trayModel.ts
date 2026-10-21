@@ -3,13 +3,24 @@
 // (Sources/DictateApp/StatusItemController.swift): same items, titles, and order, rebuilt each
 // time the menu opens. The icon rule is v1's `AppDelegate.render`/`refreshIcon`, and the model
 // status lines are v1's `AppDelegate.loadModel` strings, now driven by the engine's `model` events.
+// Task 13 adds the side-by-side item above Quit: "Pause old Dictate while testing" or "Switch back
+// to old Dictate" (side-by-side.ts).
 import type { EngineEvent } from '../shared/protocol'
 import type { HistoryEntry } from './core/history'
 import type { PipelineState } from './core/pipeline'
+import type { V1Status } from './side-by-side'
 
 export type TrayIcon = 'idle' | 'listening' | 'working' | 'warning'
 
-export type TrayAction = 'openOnboarding' | 'copyLast' | 'pasteRaw' | 'copyEntry' | 'openSettings' | 'quit'
+export type TrayAction =
+  | 'openOnboarding'
+  | 'copyLast'
+  | 'pasteRaw'
+  | 'copyEntry'
+  | 'openSettings'
+  | 'pauseV1'
+  | 'switchBackToV1'
+  | 'quit'
 
 export type TrayItem =
   | { kind: 'action'; label: string; action: TrayAction; enabled: boolean; accelerator?: string; payload?: string }
@@ -29,6 +40,23 @@ export interface TrayState {
   modelStatus: string | null
   /** The engine crashed too often and Engine stopped restarting it. */
   engineFailed: boolean
+  /** Which side-by-side item to show (Task 13), or none. See `sideBySide`. */
+  sideBySide: SideBySide
+}
+
+export type SideBySide = 'pause' | 'switchBack' | null
+
+export const PAUSE_V1 = 'Pause old Dictate while testing'
+export const SWITCH_BACK_TO_V1 = 'Switch back to old Dictate'
+
+/**
+ * Pause while v1 is running or its login agent is enabled; Switch back otherwise. Nothing when
+ * there's no v1 to switch with, or before the first probe (null; the final build never probes).
+ */
+export function sideBySide(v1: V1Status | null): SideBySide {
+  if (v1 === null) return null
+  if (v1.running || v1.agentEnabled) return 'pause'
+  return v1.installed ? 'switchBack' : null
 }
 
 export const MODEL_PREPARING = 'Preparing speech model…'
@@ -106,6 +134,11 @@ export function trayMenu(state: TrayState): TrayItem[] {
   }
   items.push({ kind: 'action', label: 'Settings…', action: 'openSettings', enabled: true, accelerator: 'Command+,' })
   items.push({ kind: 'separator' })
+  if (state.sideBySide === 'pause') {
+    items.push({ kind: 'action', label: PAUSE_V1, action: 'pauseV1', enabled: true })
+  } else if (state.sideBySide === 'switchBack') {
+    items.push({ kind: 'action', label: SWITCH_BACK_TO_V1, action: 'switchBackToV1', enabled: true })
+  }
   items.push({ kind: 'action', label: `Quit ${state.appName}`, action: 'quit', enabled: true, accelerator: 'Command+Q' })
   return items
 }
