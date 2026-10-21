@@ -44,8 +44,6 @@ guard let dataDirPath = argumentValue("--data-dir", in: arguments),
     writeLine(encodeLine(EngineEvent.log(message: "usage: dictate-engine --data-dir <path> --keychain-service <service>")))
     exit(2)
 }
-// Secret ops (secret.get/set/delete) are wired to this service in a later task.
-_ = keychainService
 
 let dataDir = URL(fileURLWithPath: dataDirPath)
 let speech = Speech(
@@ -57,6 +55,18 @@ let speech = Speech(
 )
 
 let keyTap = KeyTap(hotkey: .default, emit: { event in writeLine(encodeLine(event)) })
+
+// Same wiring as v1's `Sources/DictateApp/AppDelegate.swift` (`inserter`/`pipeline`'s `selection`).
+let frontmostContext = FrontmostContext()
+let desktop = Desktop(
+    frontmostContext: frontmostContext,
+    inserter: Inserter(pasteboard: SystemPasteboard(), keys: CGEventKeySender(), hasFocusedTextField: { frontmostContext.hasFocusedTextField() }),
+    selectionReader: SelectionReader(probe: { frontmostContext.selection() }, pasteboard: SystemPasteboard(), keys: CGEventKeySender()),
+    secretStore: KeychainStore(service: keychainService, account: "openrouter"),
+    // Always v1's real service, regardless of `--keychain-service` (the Preview build's own secret
+    // lives under a different service) — see `Desktop.legacyKey`'s doc comment.
+    legacyStore: KeychainStore(service: "com.leigh.dictate", account: "openrouter")
+)
 
 let handlers = Handlers(
     startRecording: {
@@ -78,6 +88,10 @@ let handlers = Handlers(
         }
         return fields
     },
+    context: desktop.context,
+    selection: desktop.selection,
+    paste: desktop.paste,
+    copy: desktop.copy,
     setHotkey: { key in
         guard let hotkey = Hotkey(rawValue: key) else { throw UnknownHotkey() }
         // `keyTap.hotkey` is read on the main thread by the tap callback without locking, so it's
@@ -85,6 +99,12 @@ let handlers = Handlers(
         await MainActor.run { keyTap.hotkey = hotkey }
         return [:]
     },
+    permissions: desktop.permissions,
+    requestPermission: desktop.requestPermission,
+    secretGet: desktop.secretGet,
+    secretSet: desktop.secretSet,
+    secretDelete: desktop.secretDelete,
+    legacyKey: desktop.legacyKey,
     quit: {
         // `shutdownThenExit` awaits `speech.shutdown()` to full completion
         // before even scheduling `exit` — if a transcription is in flight,
