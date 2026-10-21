@@ -229,11 +229,22 @@ doc_in_front() {
   fi
 }
 
+# macOS can refuse a background request to switch apps while another app is in use, so ask
+# again (through LaunchServices as well) for up to 5 s. The caller still checks the result.
+bring_document_to_front() {
+  for _ in $(seq 10); do
+    open -a TextEdit "$WORK/$DOC"
+    textedit_ui 'set frontmost to true' "perform action \"AXRaise\" of ($(window_of "$DOC"))" >/dev/null
+    sleep 0.5
+    doc_in_front && return 0
+  done
+  return 0
+}
+
 # Holds Fn for 1.5 s with the document in front; sets DOC_TEXT to the document's text afterwards.
 dictate_into_document() {
   local since outcome
-  textedit_ui 'set frontmost to true' "perform action \"AXRaise\" of ($(window_of "$DOC"))" >/dev/null
-  sleep 0.5
+  bring_document_to_front
   printf %s "$SENTINEL" | pbcopy
   since=$(log_lines)
   assert_unlocked
