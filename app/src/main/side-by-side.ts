@@ -37,7 +37,7 @@ export const execFileExec: Exec = (file, args) =>
     })
   })
 
-/** A launchd path, so always POSIX (the same on every OS the tests run on). */
+/** A launchd plist path. launchd is macOS-only and its paths are POSIX, so join with path.posix. */
 export function agentPlistPath(home: string, label: string): string {
   return path.posix.join(home, 'Library', 'LaunchAgents', `${label}.plist`)
 }
