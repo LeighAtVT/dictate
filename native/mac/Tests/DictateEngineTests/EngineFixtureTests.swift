@@ -38,7 +38,34 @@ private struct UnusedDownloader: DownloadTransport {
     }
 }
 
-@Suite(.serialized, .enabled(if: engineModelPresent, "Whisper model not downloaded"))
+/// Runs the suites that use the real Whisper model one at a time, across both test targets (and
+/// across `swift test` runs going at once). They share one GPU, and `AccuracyTests` times its
+/// transcriptions: alone each takes about 0.3 s, but with the other model suites transcribing at
+/// the same time its slowest went past the 1 s limit in about half of the full-suite runs.
+/// The same type is in Tests/DictateCoreTests/TranscriberTests.swift; a file lock is the one thing both test targets can share.
+struct WhisperModelGate: SuiteTrait, TestScoping {
+    static let lockPath = NSTemporaryDirectory() + "dictate-whisper-model-tests.lock"
+
+    func scopeProvider(for test: Test, testCase: Test.Case?) -> Self? { test.isSuite ? self : nil }
+
+    func provideScope(for test: Test, testCase: Test.Case?, performing function: @Sendable () async throws -> Void) async throws {
+        // flock waits for the other suite to finish, so it waits on a thread of its own.
+        let fd = try await onOwnThread { () throws -> Int32 in
+            let fd = open(Self.lockPath, O_CREAT | O_RDWR, 0o644)
+            guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+            guard flock(fd, LOCK_EX) == 0 else { close(fd); throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+            return fd
+        }
+        defer { flock(fd, LOCK_UN); close(fd) }
+        try await function()
+    }
+}
+
+extension Trait where Self == WhisperModelGate {
+    static var oneModelSuiteAtATime: Self { Self() }
+}
+
+@Suite(.serialized, .enabled(if: engineModelPresent, "Whisper model not downloaded"), .oneModelSuiteAtATime)
 struct EngineFixtureTests {
     @Test func stopRecordingTranscribesHello() async throws {
         let recorder = FixtureRecording(try loadEngineFixture("hello"))
