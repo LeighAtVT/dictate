@@ -93,9 +93,20 @@ scripts/build-app.sh           # build, sign, copy to /Applications, and launch
 
 Dictate Preview is the next version of Dictate, being tested next to the current one. It does the same job with the same keys and settings, but its menu-bar app and settings windows are rebuilt (in Electron), and the speech-to-text part runs as a small separate program inside the app. It's a preview: expect rough edges, and keep the current Dictate installed so you can switch back.
 
+### Download
+
+Dictate Preview is published as a prerelease on the [Releases page](https://github.com/LeighAtVT/dictate/releases). The first one is `v2.0.0-beta.1`.
+
+1. Download the Dictate Preview zip from the newest v2 release and double-click it to unzip.
+2. Drag **Dictate Preview** into your **Applications** folder.
+3. The zip isn't signed by a developer Apple trusts, so macOS warns you the first time you open it. Right-click **Dictate Preview** in Applications, choose **Open**, then click **Open** again. If macOS offers no **Open** button (macOS 15 and newer), open **System Settings → Privacy & Security**, scroll down, and click **Open Anyway**.
+4. A setup window asks for two permissions. Grant both: **Microphone**, so it can hear you, and **Accessibility**, so it can see which key you pressed and paste the text.
+
+macOS may forget these permissions when you install a newer download. If dictation stops working after an update, turn both on again in **System Settings → Privacy & Security**.
+
 ### Install from a clone
 
-Builds from CI aren't signed with a stable certificate, and macOS forgets an unsigned app's permissions after every update, so for now build it on your own Mac. You need Apple's Command Line Tools (`xcode-select --install`) and Node.js (CI uses Node 26).
+Building it on your own Mac signs it with your own certificate, so macOS keeps its permissions across updates. You need Apple's Command Line Tools (`xcode-select --install`) and Node.js (CI uses Node 26).
 
 ```sh
 git clone https://github.com/LeighAtVT/dictate.git && cd dictate
@@ -132,4 +143,4 @@ scripts/build-preview.sh --no-open        # build and install, but don't open
 scripts/build-preview.sh --no-install     # build and zip only, to app/dist/Dictate-Preview-mac.zip
 ```
 
-`scripts/build-preview.sh` signs with the "Dictate Local Signing" certificate. Set `DICTATE_SIGN_IDENTITY` to use another identity, or to `-` for an ad hoc signature (the zip is then named `Dictate-Preview-mac-UNSIGNED.zip`). Every push runs the app's tests on macOS and Windows and the Swift tests and build on macOS, and keeps the built zip as a download on the run's page.
+`scripts/build-preview.sh` signs with the "Dictate Local Signing" certificate. Set `DICTATE_SIGN_IDENTITY` to use another identity, or to `-` for an ad hoc signature (the zip is then named `Dictate-Preview-mac-UNSIGNED.zip`). Every push runs the app's tests on macOS and Windows and the Swift tests and build on macOS. Each run also keeps the zip it built, but only people signed in to GitHub can download it, and it is deleted after 90 days. To try the app, download it from the [Releases page](https://github.com/LeighAtVT/dictate/releases) instead.
