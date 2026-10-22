@@ -17,7 +17,7 @@ import Foundation
 // `Desktop` is `@unchecked Sendable`, matching `KeyTap`/`Speech` elsewhere in
 // this target: safe because every method only reads its own `let`
 // properties and funnels the actual work through one `MainActor.run` (or an
-// already-`@MainActor` protocol call) or one `Task.detached`, never touching
+// already-`@MainActor` protocol call) or one `onOwnThread` call, never touching
 // shared mutable state directly.
 
 /// One generic-password Keychain item's read/write/delete, the shape both
@@ -129,29 +129,30 @@ public final class Desktop: @unchecked Sendable {
         return [:]
     }
 
-    /// Runs off the main actor, detached from whatever context dispatched this request: a
-    /// Keychain read can block the calling thread outright (e.g. behind a Keychain-unlock
-    /// prompt), and must never hold up `context`/`paste`/other main-actor work queued behind it.
-    /// Goes through `secretCache` (not `secretStore` directly) so a second `secret.get` arriving
-    /// while the first is still blocked gets `nil` back immediately rather than also blocking.
+    /// Runs on a thread of its own (`onOwnThread`), off both the main actor and Swift's
+    /// cooperative thread pool: a Keychain read can block the calling thread outright (e.g. behind
+    /// a Keychain-unlock prompt), and must never hold up `context`/`paste`/other work queued
+    /// behind it. Goes through `secretCache` (not `secretStore` directly) so a second `secret.get`
+    /// arriving while the first is still blocked gets `nil` back immediately rather than also
+    /// blocking.
     public func secretGet() async throws -> [String: JSONValue] {
-        let value = await Task.detached { [secretCache] in secretCache.value() }.value
+        let value = try await onOwnThread { [secretCache] in secretCache.value() }
         return ["value": value.map(JSONValue.string) ?? .null]
     }
 
     public func secretSet(_ value: String) async throws -> [String: JSONValue] {
-        try await Task.detached { [secretStore, secretCache] in
+        try await onOwnThread { [secretStore, secretCache] in
             try secretStore.write(value)
             secretCache.set(value)
-        }.value
+        }
         return [:]
     }
 
     public func secretDelete() async throws -> [String: JSONValue] {
-        try await Task.detached { [secretStore, secretCache] in
+        try await onOwnThread { [secretStore, secretCache] in
             try secretStore.delete()
             secretCache.set(nil)
-        }.value
+        }
         return [:]
     }
 
@@ -160,7 +161,20 @@ public final class Desktop: @unchecked Sendable {
     /// lives under a different service; this is strictly v1's legacy item for one-time import).
     /// Never writes or deletes it.
     public func legacyKey() async throws -> [String: JSONValue] {
-        let key = await Task.detached { [legacyStore] in legacyStore.read() }.value
+        let key = try await onOwnThread { [legacyStore] in legacyStore.read() }
         return ["key": key.map(JSONValue.string) ?? .null]
+    }
+}
+
+/// Runs `work` on a new thread of its own and resumes the caller with its result or error.
+///
+/// For calls that can block a thread for an unbounded time, like a Keychain read waiting on an
+/// unlock or "allow access" prompt. `Task.detached` isn't enough: it still runs on Swift's
+/// cooperative thread pool, which has only one thread per CPU core, so a blocked call there
+/// stalls every other request's async work until the prompt is answered. Keychain calls are rare
+/// (a few per launch, plus Settings), so a thread per call costs nothing that matters.
+func onOwnThread<T: Sendable>(_ work: @escaping @Sendable () throws -> T) async throws -> T {
+    try await withCheckedThrowingContinuation { continuation in
+        Thread { continuation.resume(with: Result { try work() }) }.start()
     }
 }

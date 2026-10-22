@@ -54,17 +54,27 @@ private final class FakeSecretStore: SecretStoring, @unchecked Sendable {
     var valueToReturn: String?
     var readDelay: TimeInterval = 0
 
+    private var _queueLabels: [String] = []
+
     func read() -> String? {
-        lock.withLock { _readCalls += 1 }
+        lock.withLock { _readCalls += 1; _queueLabels.append(currentQueueLabel()) }
         if readDelay > 0 { Thread.sleep(forTimeInterval: readDelay) }
         return valueToReturn
     }
-    func write(_ value: String) throws { lock.withLock { _writeCalls += 1 } }
-    func delete() throws { lock.withLock { _deleteCalls += 1 } }
+    func write(_ value: String) throws { lock.withLock { _writeCalls += 1; _queueLabels.append(currentQueueLabel()) } }
+    func delete() throws { lock.withLock { _deleteCalls += 1; _queueLabels.append(currentQueueLabel()) } }
+
+    /// The dispatch queue each call ran on. Swift's cooperative thread pool shows up as
+    /// "com.apple.root.<qos>.cooperative"; a thread of its own has no queue label.
+    var queueLabels: [String] { lock.withLock { _queueLabels } }
 
     var readCalls: Int { lock.withLock { _readCalls } }
     var writeCalls: Int { lock.withLock { _writeCalls } }
     var deleteCalls: Int { lock.withLock { _deleteCalls } }
+}
+
+private func currentQueueLabel() -> String {
+    String(cString: __dispatch_queue_get_label(nil))
 }
 
 /// Minimal `Pasteboarding` fake (the engine-level tests need their own copy:
@@ -331,6 +341,25 @@ private func makeDesktop(
         let allLines = sink.lines.map(DecodedLine.init)
         #expect(allLines.contains { $0.reply == 1 && $0.ok == true })
         #expect(slowStore.readCalls == 1)
+    }
+
+    /// A Keychain call can block its thread for as long as an unlock or "allow access" prompt is
+    /// up. Swift's cooperative thread pool has only one thread per CPU core, so every Keychain
+    /// call has to run on a thread of its own, or a prompt would stall every other request's
+    /// async work (Task 16 fix round: on a 3-core CI runner it held up unrelated replies by 4 s).
+    @Test func keychainCallsRunOffTheCooperativePool() async throws {
+        let store = FakeSecretStore()
+        let legacy = FakeSecretStore()
+        let desktop = makeDesktop(secretStore: store, legacyStore: legacy)
+
+        _ = try await desktop.secretGet()
+        _ = try await desktop.secretSet("k")
+        _ = try await desktop.secretDelete()
+        _ = try await desktop.legacyKey()
+
+        let labels = store.queueLabels + legacy.queueLabels
+        #expect(labels.count == 4)
+        #expect(!labels.contains { $0.contains("cooperative") }, "Keychain calls ran on \(labels)")
     }
 
     /// Fix round 1, Important issue 3: `secret.get` goes through `CachedSecret`, the same seam v1
