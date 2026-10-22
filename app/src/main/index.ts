@@ -42,7 +42,7 @@ import { PillWindow } from './pill'
 import { PillPresenter } from './pillPresenter'
 import { TrayController } from './tray'
 import { phaseAfter, sideBySide, trayIcon, type DictationPhase } from './trayModel'
-import { checkForUpdate, isReleaseUrl, scheduleUpdateChecks, type Update } from './updateCheck'
+import { UpdateChecker, checkForUpdate, releaseUrl } from './updateCheck'
 import { variantFor } from './variant'
 import { AppWindows } from './windows'
 
@@ -253,15 +253,14 @@ async function start(): Promise<void> {
     (sender) => windows.owns(sender)
   )
 
-  // --- Update check: at launch, then every 24 h (Ruling R41) -----------------------------------
-  let update: Update | null = null
-  scheduleUpdateChecks(
-    () => checkForUpdate(fetch, app.getVersion()),
-    (found) => {
-      if (found && found.version !== update?.version) record(`update available: ${found.version}`)
-      update = found
-    }
-  )
+  // --- Update check: at launch, every 24 h, 1 h after a failure, and on wake (R41, R46) -------
+  const updates = new UpdateChecker({
+    check: () => checkForUpdate(fetch, app.getVersion()),
+    log: record,
+    onFound: (found) => record(`update available: ${found.version}`)
+  })
+  updates.start()
+  powerMonitor.on('resume', () => updates.checkNow())
 
   // --- Side by side with v1 (preview only): which item the tray shows -------------------------
   let v1: V1Status | null = null
@@ -285,7 +284,7 @@ async function start(): Promise<void> {
       modelStatus: status.modelStatus,
       engineFailed: status.engineFailed,
       sideBySide: sideBySide(v1),
-      update
+      update: updates.update
     }),
     {
       openOnboarding,
@@ -325,8 +324,9 @@ async function start(): Promise<void> {
         })
       },
       openUpdate: (url) => {
-        // The release page only (updateCheck.ts already filtered it); nothing else is opened.
-        if (isReleaseUrl(url)) void shell.openExternal(url)
+        // The release page only (updateCheck.ts already filtered it), as its normalized URL.
+        const page = releaseUrl(url)
+        if (page !== null) void shell.openExternal(page)
       },
       copyDiagnostics: () => {
         void copyDiagnostics({
@@ -339,7 +339,9 @@ async function start(): Promise<void> {
               permissions: () => engine.request({ op: 'permissions' }),
               hasKey: apiKey !== null && apiKey.length > 0,
               settings: settings.get(),
-              update,
+              update: updates.update,
+              updateStatus: updates.status,
+              home,
               logFile: variant.logFile
             }),
           copy: (text) => engine.request({ op: 'copy', text }),

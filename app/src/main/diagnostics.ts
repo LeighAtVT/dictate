@@ -1,7 +1,7 @@
 // Dictate v2, Task 15: the tray's "Copy diagnostics" (spec 2.2 `Diagnostics`). One block of plain
 // text to paste into a bug report: app and macOS versions, the variant, the engine's state and its
 // last `model` event, permissions, whether a key is set, the update check, the settings, and the
-// last 200 lines of dictate.log. Never the key, history, dictated text, vocabulary, or shortcuts
+// last 200 lines of dictate.log, with the home folder shown as ~. Never the key, history, dictated text, vocabulary, or shortcuts
 // (global-constraints.md, Ruling R22): it is given none of them, it never asks the engine for a
 // secret, and the settings are copied field by field from a list rather than dumped whole.
 import fs from 'node:fs'
@@ -9,10 +9,12 @@ import type { ReplyMap } from '../shared/protocol'
 import { logTimestamp } from './core/eventLog'
 import type { Settings } from './core/settings'
 import type { AppStatus } from './appStatus'
-import type { Update } from './updateCheck'
+import type { Update, UpdateStatus } from './updateCheck'
 import type { Variant } from './variant'
 
 export const LOG_LINES = 200
+/** A hung engine shouldn't hold up the copy (its own default is 5 s); the last poll is used instead. */
+export const PERMISSIONS_TIMEOUT_MS = 2000
 
 type Permissions = ReplyMap['permissions']
 
@@ -26,7 +28,11 @@ export interface DiagnosticsDeps {
   /** Whether a key is saved. Only ever a boolean; the key itself never reaches this module. */
   hasKey: boolean
   settings: Settings
+  /** The last known newer release (kept through failed checks), and how the latest check went. */
   update: Update | null
+  updateStatus: UpdateStatus
+  /** Shown as ~ in the log tail. */
+  home: string
   logFile: string
   now?: () => Date
 }
@@ -71,6 +77,40 @@ function readLines(file: string): string[] {
   }
 }
 
+/** `home` as ~, wherever it's a whole path component (so `/Users/a` leaves `/Users/ab` alone). */
+function tildeHome(line: string, home: string): string {
+  if (home.length === 0) return line
+  const escaped = home.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return line.replace(new RegExp(`${escaped}(?=/|$|[\\s)"',:;])`, 'g'), '~')
+}
+
+function updateLine(update: Update | null, status: UpdateStatus): string {
+  if (update) return `Update: ${update.version} available, ${update.url}${status === 'error' ? ' (last check failed)' : ''}`
+  switch (status) {
+    case 'error':
+      return 'Update: check failed'
+    case 'pending':
+      return 'Update: not checked yet'
+    default:
+      return 'Update: none found'
+  }
+}
+
+/** Rejects when `promise` hasn't settled within `ms`; the timer never outlives the call. */
+async function within<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('timed out')), ms)
+      })
+    ])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 /** The last `LOG_LINES` lines, reaching into the rotated `.1` copy when the current file is short. */
 function logTail(file: string): string[] {
   const current = readLines(file)
@@ -84,14 +124,14 @@ export async function diagnostics(deps: DiagnosticsDeps): Promise<string> {
 
   let permissions: string
   try {
-    permissions = `Permissions: ${permissionsLine(await deps.permissions())}`
+    permissions = `Permissions: ${permissionsLine(await within(deps.permissions(), PERMISSIONS_TIMEOUT_MS))}`
   } catch {
     permissions = status.permissions
       ? `Permissions (last known): ${permissionsLine(status.permissions)}`
       : 'Permissions: unknown'
   }
 
-  const tail = logTail(deps.logFile)
+  const tail = logTail(deps.logFile).map((line) => tildeHome(line, deps.home))
   const lines = [
     `${variant.name} diagnostics, ${logTimestamp(now)}`,
     `App: ${variant.name} ${deps.appVersion} (${variant.bundleId}, ${variant.isFinal ? 'final' : 'preview'} build)`,
@@ -100,7 +140,7 @@ export async function diagnostics(deps: DiagnosticsDeps): Promise<string> {
     `Last model event: ${status.lastModelEvent ? JSON.stringify(status.lastModelEvent) : 'none'}`,
     permissions,
     `OpenRouter key: ${deps.hasKey ? 'set' : 'not set'}`,
-    `Update: ${deps.update ? `${deps.update.version} available, ${deps.update.url}` : 'none found'}`,
+    updateLine(deps.update, deps.updateStatus),
     'Settings:',
     JSON.stringify(sharedSettings(deps.settings), null, 2),
     '',

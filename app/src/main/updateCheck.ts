@@ -2,36 +2,44 @@
 // every 24 h it reads this repo's GitHub releases and reports the newest v2 release that's newer
 // than this build; the tray then shows "Update available (v…)" (trayModel.ts). No automatic
 // updates. GitHub's /releases/latest skips prereleases, so this reads the releases list instead
-// (Ruling R41). Any network or HTTP error, or an unexpected reply, counts as no update.
+// (Ruling R41). A network or HTTP error, or an unexpected reply, is a failed check: the last known
+// update is kept and the check is retried after an hour (Ruling R46).
 
 export const RELEASES_URL = 'https://api.github.com/repos/LeighAtVT/dictate/releases?per_page=30'
 export const UPDATE_INTERVAL_MS = 24 * 60 * 60 * 1000
+export const RETRY_AFTER_ERROR_MS = 60 * 60 * 1000
 const TIMEOUT_MS = 15_000
 
 export interface Update {
   /** Semver without the tag's "v", e.g. "2.0.0-beta.2". */
   version: string
-  /** The release's GitHub page; always passes `isReleaseUrl`. */
+  /** The release's GitHub page, normalized by `releaseUrl`. */
   url: string
 }
 
-/** Only pages of this repo on github.com, over https: the tray opens nothing else. */
-export function isReleaseUrl(url: string | undefined): url is string {
-  if (typeof url !== 'string') return false
+/** One check's answer: a newer release, nothing newer, or the check failed. */
+export type CheckResult = { status: 'found'; update: Update } | { status: 'none' } | { status: 'error' }
+
+/**
+ * The normalized URL (`new URL(url).href`) when `url` is a page of this repo on github.com over
+ * https, else null. The tray opens nothing else.
+ */
+export function releaseUrl(url: unknown): string | null {
+  if (typeof url !== 'string') return null
   let parsed: URL
   try {
     parsed = new URL(url)
   } catch {
-    return false
+    return null
   }
-  return (
+  const ok =
     parsed.protocol === 'https:' &&
     parsed.hostname === 'github.com' &&
     parsed.port === '' &&
     parsed.username === '' &&
     parsed.password === '' &&
     parsed.pathname.startsWith('/LeighAtVT/dictate/')
-  )
+  return ok ? parsed.href : null
 }
 
 // semver.org 2.0.0, section 9-10: no leading zeros; build metadata is ignored for precedence.
@@ -85,56 +93,119 @@ function candidate(release: unknown): Update | null {
   const url = r['html_url']
   if (typeof tag !== 'string' || !tag.startsWith('v2.')) return null
   const version = tag.slice(1)
-  if (parse(version) === null || typeof url !== 'string' || !isReleaseUrl(url)) return null
-  return { version, url }
+  const page = releaseUrl(url)
+  if (parse(version) === null || page === null) return null
+  return { version, url: page }
 }
 
-/** The newest v2 release newer than `current`, or null (also on any error). */
-export async function checkForUpdate(fetchFn: typeof fetch, current: string): Promise<Update | null> {
-  if (parse(current) === null) return null
+/**
+ * The newest v2 release newer than `current` ('found'), nothing newer ('none'), or 'error' when
+ * GitHub couldn't be reached or answered with something other than a list of releases. A
+ * `current` that isn't semver can't be compared, so it's 'none' without a request.
+ */
+export async function checkForUpdate(fetchFn: typeof fetch, current: string): Promise<CheckResult> {
+  if (parse(current) === null) return { status: 'none' }
   let releases: unknown
   try {
     const response = await fetchFn(RELEASES_URL, {
       headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'Dictate' },
       signal: AbortSignal.timeout(TIMEOUT_MS)
     })
-    if (!response.ok) return null
+    if (!response.ok) return { status: 'error' }
     releases = await response.json()
   } catch {
-    return null
+    return { status: 'error' }
   }
-  if (!Array.isArray(releases)) return null
+  if (!Array.isArray(releases)) return { status: 'error' }
 
   let best: Update | null = null
   for (const release of releases) {
     const c = candidate(release)
     if (c && (best === null || (compareSemver(c.version, best.version) ?? 0) > 0)) best = c
   }
-  if (best === null || (compareSemver(best.version, current) ?? 0) <= 0) return null
-  return best
+  if (best === null || (compareSemver(best.version, current) ?? 0) <= 0) return { status: 'none' }
+  return { status: 'found', update: best }
 }
 
+/** Where the update check stands, for the tray and Copy diagnostics. */
+export type UpdateStatus = 'pending' | 'found' | 'none' | 'error'
+
+const message = (error: unknown): string => (error instanceof Error ? error.message : String(error))
+
 /**
- * Runs `check` now and then every 24 h, handing each result to `onResult` (null when the check
- * threw). A check still running when the next is due is not doubled up. Returns a stop function.
+ * Runs the check at `start()` and then every 24 h, or 1 h after a failed check, which keeps the
+ * last known update. `checkNow()` (on wake from sleep) checks at once unless a check is already
+ * running. There is never more than one check in flight or one timer pending, and none after
+ * `stop()`. `onFound` runs once per newly found version; its errors, and a check that throws,
+ * are logged rather than swallowed.
  */
-export function scheduleUpdateChecks(check: () => Promise<Update | null>, onResult: (update: Update | null) => void): () => void {
-  let running = false
-  const run = (): void => {
-    if (running) return
-    running = true
-    check()
-      .catch(() => null)
-      .then(onResult)
-      .catch(() => {})
+export class UpdateChecker {
+  /** The newest known release newer than this build; kept through failed checks. */
+  update: Update | null = null
+  status: UpdateStatus = 'pending'
+  private readonly check: () => Promise<CheckResult>
+  private readonly log: (message: string) => void
+  private readonly onFound?: (update: Update) => void
+  private timer: ReturnType<typeof setTimeout> | null = null
+  private running = false
+  private stopped = false
+
+  constructor(deps: { check: () => Promise<CheckResult>; log: (message: string) => void; onFound?: (update: Update) => void }) {
+    this.check = deps.check
+    this.log = deps.log
+    this.onFound = deps.onFound
+  }
+
+  start(): void {
+    this.checkNow()
+  }
+
+  checkNow(): void {
+    if (this.running || this.stopped) return
+    this.clearTimer()
+    this.running = true
+    this.check()
+      .catch((error: unknown): CheckResult => {
+        this.log(`update check failed: ${message(error)}`)
+        return { status: 'error' }
+      })
+      .then((result) => this.apply(result))
       .finally(() => {
-        running = false
+        this.running = false
+        if (!this.stopped) {
+          this.timer = setTimeout(() => this.checkNow(), this.status === 'error' ? RETRY_AFTER_ERROR_MS : UPDATE_INTERVAL_MS)
+        }
       })
   }
-  const first = setTimeout(run, 0)
-  const timer = setInterval(run, UPDATE_INTERVAL_MS)
-  return () => {
-    clearTimeout(first)
-    clearInterval(timer)
+
+  stop(): void {
+    this.stopped = true
+    this.clearTimer()
+  }
+
+  private apply(result: CheckResult): void {
+    if (result.status === 'error') {
+      this.status = 'error'
+      return
+    }
+    if (result.status === 'none') {
+      this.status = 'none'
+      this.update = null
+      return
+    }
+    const isNew = result.update.version !== this.update?.version
+    this.status = 'found'
+    this.update = result.update
+    if (!isNew || !this.onFound) return
+    try {
+      this.onFound(result.update)
+    } catch (error) {
+      this.log(`update check: handling ${result.update.version} failed: ${message(error)}`)
+    }
+  }
+
+  private clearTimer(): void {
+    if (this.timer !== null) clearTimeout(this.timer)
+    this.timer = null
   }
 }

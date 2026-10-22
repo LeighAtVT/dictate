@@ -3,13 +3,13 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { History } from './core/history'
 import { saveShortcuts, saveVocabulary } from './core/fileStores'
 import { FakeEngine } from './core/pipelineFakes'
 import { SettingsStore } from './core/settingsStore'
 import { AppStatus } from './appStatus'
-import { copyDiagnostics, diagnostics, LOG_LINES, type DiagnosticsDeps } from './diagnostics'
+import { copyDiagnostics, diagnostics, LOG_LINES, PERMISSIONS_TIMEOUT_MS, type DiagnosticsDeps } from './diagnostics'
 import { variantFor } from './variant'
 
 const KEY = 'sk-or-v1-SECRET-KEY-0123456789'
@@ -65,6 +65,8 @@ function setUp(): { deps: DiagnosticsDeps & { status: AppStatus }; engine: FakeE
     hasKey: true,
     settings: settings.get(),
     update: null,
+    updateStatus: 'none',
+    home: dir,
     logFile: variant.logFile,
     now: () => new Date('2026-10-22T17:00:00.500Z')
   }
@@ -107,11 +109,67 @@ describe('diagnostics', () => {
     expect(text).toContain('Last 2 lines of dictate.log:\n2026-10-22T16:29:07Z launch pid=1\n2026-10-22T16:29:08Z engine up')
   })
 
-  it('names a known update', async () => {
+  it('names a known update, and tells a failed check from none found', async () => {
     const { deps } = setUp()
     const url = 'https://github.com/LeighAtVT/dictate/releases/tag/v2.0.0-beta.2'
-    const text = await diagnostics({ ...deps, update: { version: '2.0.0-beta.2', url } })
-    expect(text).toContain(`Update: 2.0.0-beta.2 available, ${url}`)
+    const known = { version: '2.0.0-beta.2', url }
+    const line = async (patch: Partial<DiagnosticsDeps>): Promise<string | undefined> =>
+      (await diagnostics({ ...deps, ...patch })).split('\n').find((l) => l.startsWith('Update:'))
+    expect(await line({ update: known, updateStatus: 'found' })).toBe(`Update: 2.0.0-beta.2 available, ${url}`)
+    expect(await line({ update: known, updateStatus: 'error' })).toBe(
+      `Update: 2.0.0-beta.2 available, ${url} (last check failed)`
+    )
+    expect(await line({ update: null, updateStatus: 'error' })).toBe('Update: check failed')
+    expect(await line({ update: null, updateStatus: 'none' })).toBe('Update: none found')
+    expect(await line({ update: null, updateStatus: 'pending' })).toBe('Update: not checked yet')
+  })
+
+  it('gives a hung engine 2 s for permissions, then uses the last report', async () => {
+    const { deps } = setUp()
+    deps.status.permissionsReport({ accessibility: true, microphone: 'denied' })
+    vi.useFakeTimers()
+    try {
+      let settled = false
+      const pending = diagnostics({ ...deps, permissions: () => new Promise(() => {}) }).then((t) => {
+        settled = true
+        return t
+      })
+      await vi.advanceTimersByTimeAsync(PERMISSIONS_TIMEOUT_MS - 1)
+      expect(settled).toBe(false)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(await pending).toContain('Permissions (last known): accessibility=true microphone=denied')
+      expect(PERMISSIONS_TIMEOUT_MS).toBe(2000)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('leaves no timer behind when the engine answers quickly', async () => {
+    const { deps } = setUp()
+    vi.useFakeTimers()
+    try {
+      await diagnostics(deps)
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('shows the home folder as ~ in the log tail', async () => {
+    const { deps, logFile } = setUp()
+    fs.writeFileSync(
+      logFile,
+      [
+        `2026-10-22T16:29:07Z crash report: ${dir}/Library/Logs/DiagnosticReports/Dictate Preview-1.ips`,
+        `2026-10-22T16:29:08Z engine: model at ${dir}/Library/Application Support/Dictate Preview/models`,
+        `2026-10-22T16:29:09Z other folder ${dir}2/x and bare ${dir}`
+      ].join('\n') + '\n'
+    )
+    const text = await diagnostics(deps)
+    expect(text).toContain('crash report: ~/Library/Logs/DiagnosticReports/Dictate Preview-1.ips')
+    expect(text).toContain('engine: model at ~/Library/Application Support/Dictate Preview/models')
+    expect(text).toContain(`other folder ${dir}2/x and bare ~`)
+    expect(text.split(dir).length - 1).toBe(1)
   })
 
   it('falls back to the last permissions report when the engine does not answer', async () => {
