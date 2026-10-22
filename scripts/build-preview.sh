@@ -11,22 +11,38 @@
 #   scripts/build-preview.sh --no-open release build, installed but not opened (the first launch
 #                                     copies v1's data and asks for the Keychain, so a person
 #                                     should be there for it)
+#   scripts/build-preview.sh --no-install
+#                                     release build zipped to app/dist/Dictate-Preview-mac.zip
+#                                     (Dictate-Preview-mac-UNSIGNED.zip when ad-hoc signed). Never
+#                                     touches /Applications and never quits or opens anything. CI
+#                                     uses this.
+#
+# DICTATE_SIGN_IDENTITY picks the codesign identity. Unset or empty means "Dictate Local Signing"
+# (scripts/make-signing-cert.sh). "-" signs ad hoc, for CI builds without the certificate.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 E2E=0
 OPEN=1
+INSTALL=1
 for arg in "$@"; do
   case "$arg" in
     --e2e) E2E=1; OPEN=0 ;;
     --no-open) OPEN=0 ;;
-    *) echo "usage: $0 [--e2e] [--no-open]" >&2; exit 2 ;;
+    --no-install) INSTALL=0; OPEN=0 ;;
+    *) echo "usage: $0 [--e2e] [--no-open] [--no-install]" >&2; exit 2 ;;
   esac
 done
+if [ "$E2E" = 1 ] && [ "$INSTALL" = 0 ]; then
+  # The e2e build carries the test-audio hook, so it's never zipped for anyone to install.
+  echo "error: --e2e and --no-install can't be combined" >&2
+  exit 2
+fi
 
-IDENTITY="Dictate Local Signing"
+IDENTITY="${DICTATE_SIGN_IDENTITY:-Dictate Local Signing}"
 APP_NAME="Dictate Preview.app"
 INSTALLED="/Applications/$APP_NAME"
+if [ "$IDENTITY" = "-" ]; then ZIP_NAME="Dictate-Preview-mac-UNSIGNED.zip"; else ZIP_NAME="Dictate-Preview-mac.zip"; fi
 
 # --- Engine (Swift, release) --------------------------------------------
 # The e2e build gets its own scratch folder so switching between the two never mixes objects
@@ -66,6 +82,16 @@ done
 codesign --force --sign "$IDENTITY" --identifier com.leigh.dictate.preview.engine "$APP/Contents/MacOS/dictate-engine"
 codesign --force --sign "$IDENTITY" --identifier com.leigh.dictate.preview "$APP"
 codesign --verify --deep --strict "$APP"
+
+# --- Zip only (--no-install) -------------------------------------------
+# ditto keeps the framework symlinks and the signatures intact; plain zip doesn't.
+if [ "$INSTALL" = 0 ]; then
+  ZIP="app/dist/$ZIP_NAME"
+  rm -f "$ZIP"
+  ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP"
+  echo "Built $ZIP (signed with: $IDENTITY; not installed)"
+  exit 0
+fi
 
 # --- Install -------------------------------------------------------------
 osascript -e 'tell application id "com.leigh.dictate.preview" to quit' 2>/dev/null || true
