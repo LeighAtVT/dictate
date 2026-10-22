@@ -42,6 +42,17 @@ private final class ExitRecorder: @unchecked Sendable {
     var calls: [Call] { lock.withLock { _calls } }
 }
 
+/// Polls `condition` every 10 ms until it holds or `timeout` passes. The
+/// "after" checks below wait this way instead of sleeping a fixed margin, so
+/// a slow CI runner can't fail them; the "not yet" checks keep their fixed
+/// sleeps, which only get safer on a slow machine.
+private func waitUntil(timeout: TimeInterval = 5, _ condition: () -> Bool) async throws {
+    let deadline = Date().addingTimeInterval(timeout)
+    while !condition(), Date() < deadline {
+        try await Task.sleep(for: .milliseconds(10))
+    }
+}
+
 @Suite struct LifecycleTests {
     @Test func exitWaitsForShutdownToCompleteFirst() async throws {
         let exitRecorder = ExitRecorder()
@@ -60,9 +71,10 @@ private final class ExitRecorder: @unchecked Sendable {
         try await Task.sleep(for: .milliseconds(250))
         #expect(exitRecorder.calls.isEmpty)
 
-        // Shutdown (500 ms) + grace period (50 ms) + margin: exit should have
-        // fired exactly once, strictly after the shutdown duration.
-        try await Task.sleep(for: .milliseconds(500))
+        // After shutdown (500 ms) + grace period (50 ms): exit fires exactly
+        // once, strictly after the shutdown duration.
+        try await waitUntil { !exitRecorder.calls.isEmpty }
+        try await Task.sleep(for: .milliseconds(100))  // room for a wrong second call
         #expect(exitRecorder.calls.count == 1)
         #expect(exitRecorder.calls.first?.code == 0)
         #expect((exitRecorder.calls.first?.elapsed ?? 0) >= 0.5)
@@ -99,8 +111,9 @@ private final class ExitRecorder: @unchecked Sendable {
         #expect(sink.lines.isEmpty)
         #expect(exitRecorder.calls.isEmpty)
 
-        // After shutdown + grace + margin: exactly one reply, exactly one exit call.
-        try await Task.sleep(for: .milliseconds(600))
+        // After shutdown + grace: exactly one reply, exactly one exit call.
+        try await waitUntil { !exitRecorder.calls.isEmpty && !sink.lines.isEmpty }
+        try await Task.sleep(for: .milliseconds(100))  // room for a wrong second reply or exit
         let replies = sink.lines.map(DecodedLine.init).filter { $0.reply == 1 }
         #expect(replies.count == 1)
         #expect(replies.first?.ok == true)
