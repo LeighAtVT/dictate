@@ -49,7 +49,10 @@ while IFS= read -r line; do
   line="${line#\"}"
   [ -n "$line" ] && EXISTING+=("$line")
 done < <(security list-keychains -d user)
-security list-keychains -d user -s "$KEYCHAIN" "${EXISTING[@]}"
+# bash 3.2 with `set -u` treats an empty "${EXISTING[@]}" as unbound, hence the + form.
+security list-keychains -d user -s "$KEYCHAIN" ${EXISTING[@]+"${EXISTING[@]}"}
 
 echo "Imported the signing identity into $KEYCHAIN:"
-security find-identity -v -p codesigning "$KEYCHAIN"
+# No -v: this self-signed identity isn't trusted, so -v would list it as 0 valid even though
+# codesign signs with it.
+security find-identity -p codesigning "$KEYCHAIN"
