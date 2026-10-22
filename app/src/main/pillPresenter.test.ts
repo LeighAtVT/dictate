@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import {
+  DIAGNOSTICS_COPIED,
   NOTICE_FADE_SECONDS,
   PillPresenter,
   RECONNECTING,
@@ -134,6 +135,15 @@ describe('pill fades', () => {
     expect(RESTART_NOTICE).toBe('Dictate restarted after an unexpected stop')
     expect(h.fire()).toEqual([RESTART_FADE_SECONDS * 1000])
     expect(RESTART_FADE_SECONDS).toBe(3)
+    expect(h.calls.at(-1)).toBe('hide')
+  })
+
+  // Ruling R44: Copy diagnostics confirms with a short notice.
+  it('shows "Diagnostics copied" and fades it like any notice', () => {
+    h.presenter.diagnosticsCopied()
+    expect(h.calls).toEqual(['show ○ Diagnostics copied'])
+    expect(DIAGNOSTICS_COPIED).toBe('Diagnostics copied')
+    expect(h.fire()).toEqual([NOTICE_FADE_SECONDS * 1000])
     expect(h.calls.at(-1)).toBe('hide')
   })
 

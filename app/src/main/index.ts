@@ -345,7 +345,11 @@ async function start(): Promise<void> {
           copy: (text) => engine.request({ op: 'copy', text }),
           fallback: (text) => clipboard.writeText(text)
         })
-          .then((via) => record(`diagnostics copied (${via === 'engine' ? 'engine' : 'app clipboard'})`))
+          .then((via) => {
+            record(`diagnostics copied (${via === 'engine' ? 'engine' : 'app clipboard'})`)
+            // Never over a dictation's Listening… or Working… pill.
+            if (phase === 'idle') pill.diagnosticsCopied()
+          })
           .catch((error: unknown) =>
             record(`diagnostics failed: ${error instanceof Error ? error.message : String(error)}`)
           )

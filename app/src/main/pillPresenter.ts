@@ -17,6 +17,8 @@ export const NOTICE_FADE_SECONDS = 1.5
 export const RESTART_FADE_SECONDS = 3
 export const RESTART_NOTICE = 'Dictate restarted after an unexpected stop'
 export const RECONNECTING = 'Reconnecting…'
+/** Ruling R44: the tray's Copy diagnostics confirms with this. */
+export const DIAGNOSTICS_COPIED = 'Diagnostics copied'
 
 export { hotkeyShortName }
 
@@ -127,6 +129,11 @@ export class PillPresenter {
   /** Shown once after launch when the previous run didn't end cleanly. */
   restartNotice(): void {
     this.show(RESTART_NOTICE, false, RESTART_FADE_SECONDS)
+  }
+
+  /** Copy diagnostics finished (Ruling R44); fades like a pipeline notice. */
+  diagnosticsCopied(): void {
+    this.show(DIAGNOSTICS_COPIED, false, NOTICE_FADE_SECONDS)
   }
 
   /** Engine 'down': "Reconnecting…" until 'up', but a fading notice finishes first. */
