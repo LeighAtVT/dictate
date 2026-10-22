@@ -30,6 +30,13 @@ public actor Transcriber: Transcribing {
     // Freed in close(); ggml aborts at process exit if a context outlives its Metal device.
     private nonisolated(unsafe) var ctx: OpaquePointer?
 
+    /// The actor runs on this queue's thread instead of Swift's cooperative thread pool.
+    /// `whisper_full` holds its thread for the whole transcription, most of it waiting on the GPU
+    /// (`waitUntilCompleted`). The pool has only one thread per CPU core, so on a pool thread that
+    /// wait would hold up every other task until the transcription finished.
+    private let queue = DispatchSerialQueue(label: "com.leigh.dictate.transcriber")
+    public nonisolated var unownedExecutor: UnownedSerialExecutor { queue.asUnownedSerialExecutor() }
+
     public init(modelURL: URL) throws {
         var params = whisper_context_default_params()
         params.use_gpu = true

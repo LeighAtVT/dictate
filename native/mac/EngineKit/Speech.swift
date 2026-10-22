@@ -79,12 +79,14 @@ public final class Speech: @unchecked Sendable {
     public func loadModel() async {
         let store = ModelStore(directory: modelDirectory, spec: .largeV3TurboQ5, downloader: downloader)
         do {
-            if !store.isReady() {
+            // Hashing the 574 MB model and loading it each hold a thread for seconds, so both run
+            // on a thread of their own rather than on Swift's cooperative pool (see `onOwnThread`).
+            if !(await onOwnThread { store.isReady() }) {
                 emit(.model(state: .downloading, fraction: 0))
                 try await store.ensureModel { [emit] fraction in emit(.model(state: .downloading, fraction: fraction)) }
             }
             emit(.model(state: .loading, fraction: nil))
-            let loaded = try makeTranscriber(store.modelURL)
+            let loaded = try await onOwnThread { [makeTranscriber] in try makeTranscriber(store.modelURL) }
             lock.withLock { transcriber = loaded }
             emit(.model(state: .ready, fraction: nil))
         } catch {

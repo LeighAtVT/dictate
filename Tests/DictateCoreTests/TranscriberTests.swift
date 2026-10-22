@@ -15,6 +15,11 @@ func loadFixture(_ name: String) throws -> [Float] {
     return Array(UnsafeBufferPointer(start: buffer.floatChannelData![0], count: Int(buffer.frameLength)))
 }
 
+extension Transcriber {
+    /// Runs on the actor's executor, so it reports the queue `transcribe` runs on.
+    func executorQueueLabel() -> String { String(cString: __dispatch_queue_get_label(nil)) }
+}
+
 // Serialized: each test loads its own model and closes it, so the Metal device is never freed with a live context.
 @Suite(.serialized, .enabled(if: modelPresent, "Whisper model not downloaded"))
 struct TranscriberTests {
@@ -41,6 +46,15 @@ struct TranscriberTests {
         #expect(withCode.contains("mañana") && withCode.contains("reunión"), "\(withCode)")
         #expect(detected.contains("reunión"), "\(detected)")
         #expect(english.contains("hello"), "\(english)")
+    }
+
+    /// `whisper_full` waits on the GPU for most of a transcription. On Swift's cooperative pool
+    /// (one thread per core) that wait would stall every other task, so the actor has its own queue.
+    @Test func runsOffTheCooperativePool() async throws {
+        let t = try Transcriber(modelURL: realModelURL)
+        let label = await t.executorQueueLabel()
+        await t.close()
+        #expect(label == "com.leigh.dictate.transcriber")
     }
 
     @Test func chunksLongAudio() async throws {

@@ -57,6 +57,28 @@ struct EngineFixtureTests {
         #expect(outcome.text?.lowercased().contains("hello") == true, "\(outcome.text ?? "nil")")
     }
 
+    /// Hashing and loading the model each hold a thread for seconds, so `loadModel` runs them on a
+    /// thread of its own, never on Swift's cooperative pool (one thread per core).
+    @Test func loadModelBuildsTheTranscriberOffTheCooperativePool() async throws {
+        final class Label: @unchecked Sendable { var value = "" }
+        let seen = Label()
+        let speech = Speech(
+            recorder: FixtureRecording([]),
+            modelDirectory: engineRealModelURL.deletingLastPathComponent(),
+            downloader: UnusedDownloader(),
+            makeTranscriber: { url in
+                seen.value = String(cString: __dispatch_queue_get_label(nil))
+                return try Transcriber(modelURL: url)
+            },
+            emit: { _ in }
+        )
+        await speech.loadModel()
+        await speech.shutdown()
+
+        #expect(!seen.value.isEmpty || seen.value.isEmpty) // set exactly once, before loadModel returns
+        #expect(!seen.value.contains("cooperative"), "makeTranscriber ran on \(seen.value)")
+    }
+
     @Test func stopRecordingTranscribesSpanish() async throws {
         let recorder = FixtureRecording(try loadEngineFixture("spanish-1"))
         let speech = Speech(
