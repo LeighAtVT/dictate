@@ -121,9 +121,12 @@ export class Engine extends EventEmitter {
     child.stdout.on('data', (chunk: Buffer) => this.onStdoutData(chunk))
     child.stderr.on('data', (chunk: Buffer) => this.onStderrData(chunk))
     child.on('exit', () => this.onExit())
-    // A spawn failure (e.g. bad command) also surfaces as 'error'; treat it
-    // like an exit so pending requests don't hang forever.
-    child.on('error', () => this.onExit())
+    // A spawn failure (e.g. bad command) also surfaces as 'error'; log why, then
+    // treat it like an exit so pending requests don't hang forever.
+    child.on('error', (err) => {
+      this.emit('event', { event: 'log', message: `process error: ${err.message}` } satisfies EngineEvent)
+      this.onExit()
+    })
 
     this.emit('up')
 

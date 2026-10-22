@@ -4,7 +4,7 @@
 import { parse } from 'plist'
 import { describe, expect, it } from 'vitest'
 import { LAUNCHCTL, type Exec } from './side-by-side'
-import { agentPlistData, canInstall, handOff, type HandOffDeps } from './startup'
+import { agentPlistData, canInstall, handOff, isAgentLaunch, type HandOffDeps } from './startup'
 
 const V1_LABEL = 'com.leigh.dictate.keepalive'
 const LABEL = 'com.leigh.dictate.preview.keepalive'
@@ -115,6 +115,16 @@ function harness(opts: {
 
 const running = (args: string[]): { code: number; stdout?: string } =>
   args[0] === 'print' ? { code: 0, stdout: `${SERVICE} = {\n\tactive count = 1\n\tstate = running\n}` } : { code: 0 }
+
+// Port of RunJournalTests' Instance.isAgentLaunch cases, with this variant's label.
+describe('isAgentLaunch', () => {
+  it("is true only when launchd started this copy from this variant's agent", () => {
+    expect(isAgentLaunch({ XPC_SERVICE_NAME: LABEL }, LABEL)).toBe(true)
+    expect(isAgentLaunch({ XPC_SERVICE_NAME: V1_LABEL }, LABEL)).toBe(false)
+    expect(isAgentLaunch({ XPC_SERVICE_NAME: 'application.com.leigh.dictate.preview.123' }, LABEL)).toBe(false)
+    expect(isAgentLaunch({}, LABEL)).toBe(false)
+  })
+})
 
 describe('handOff (port of handOffToAgentIfNeeded)', () => {
   it('writes the agent, bootstraps it, releases the lock before kickstart, and quits once the agent runs', async () => {

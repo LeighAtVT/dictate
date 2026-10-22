@@ -6,7 +6,7 @@
 // first-launch copy of v1's data (migrate.ts), and pausing or switching back to v1
 // (side-by-side.ts). Logic lives in those modules; this file only connects them. Never log
 // dictated text, the API key, or request bodies here.
-import { app, ipcMain, powerMonitor, shell } from 'electron'
+import { app, ipcMain, powerMonitor, shell, systemPreferences } from 'electron'
 import fs from 'node:fs'
 import { join } from 'node:path'
 import { atomicWrite } from './core/atomicWrite'
@@ -15,7 +15,7 @@ import { loadShortcuts, loadVocabulary, saveShortcuts, saveVocabulary } from './
 import { History } from './core/history'
 import { HotkeyController } from './core/hotkeyController'
 import { NoteSaver } from './core/noteSaver'
-import { Pipeline, type PipelineOutcome } from './core/pipeline'
+import { Pipeline } from './core/pipeline'
 import { Polisher } from './core/polisher'
 import { RunJournal } from './core/runJournal'
 import { SettingsStore } from './core/settingsStore'
@@ -32,9 +32,10 @@ import {
   v1Status,
   type V1Status
 } from './side-by-side'
-import { handOff } from './startup'
+import { handOff, isAgentLaunch } from './startup'
 import { isSettingsTab, SETTINGS_CHANGED } from '../shared/dictate'
-import { AppStatus, outcomeLogLine } from './appStatus'
+import { dictationReporter, launchLine, logRecorder, previousRunLines } from './appLog'
+import { AppStatus } from './appStatus'
 import { PillWindow } from './pill'
 import { PillPresenter } from './pillPresenter'
 import { TrayController } from './tray'
@@ -51,14 +52,7 @@ app.setPath('userData', variant.dataDir)
 // Menu-bar only app (LSUIElement): closing the pill or any window never quits.
 app.on('window-all-closed', () => {})
 
-const events = new EventLog(variant.logFile)
-const record = (message: string): void => {
-  try {
-    events.write(message)
-  } catch {
-    // Logging must never break dictation.
-  }
-}
+const record = logRecorder(new EventLog(variant.logFile))
 // macOS only, where Node always has getuid.
 const uid = process.getuid!()
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
@@ -112,7 +106,16 @@ async function start(): Promise<void> {
   // --- Run journal (v1's startJournal) -----------------------------------------------------
   const journal = new RunJournal(join(dataDir, 'run.json'))
   let exitReason = 'quit'
-  record(`launch pid=${process.pid} version=${app.getVersion()}`)
+  record(
+    launchLine({
+      pid: process.pid,
+      version: app.getVersion(),
+      agent: isAgentLaunch(process.env, variant.agentLabel),
+      // v1's AXIsProcessTrusted(), asked by the brain; `false`: never prompt. The engine's own
+      // answer follows in the first "permissions accessibility=… microphone=…" line.
+      accessibility: systemPreferences.isTrustedAccessibilityClient(false)
+    })
+  )
   const previous = journal.begin(process.pid, new Date())
   powerMonitor.on('shutdown', () => {
     exitReason = 'logout'
@@ -185,10 +188,7 @@ async function start(): Promise<void> {
     platform: 'mac'
   })
 
-  const report = (outcome: PipelineOutcome | null): void => {
-    const line = outcomeLogLine(outcome, pipeline.lastTimings)
-    if (line) record(line)
-  }
+  const report = dictationReporter(record, () => pipeline.lastTimings)
 
   // Ruling R14: `pipeline.handle` is called synchronously and its promise returned as is, and
   // `canBegin` is backed by `pipeline.acceptsBegin` (see the header comments of
@@ -419,9 +419,7 @@ async function start(): Promise<void> {
   }, 1000)
 
   if (previous) {
-    record(`previous run ended unexpectedly (pid=${previous.pid} launched ${previous.launchedAt})`)
-    const reports = join(home, 'Library', 'Logs', 'DiagnosticReports')
-    for (const file of RunJournal.crashReports(reports, new Date(previous.launchedAt))) record(`crash report: ${file}`)
+    for (const line of previousRunLines(previous, join(home, 'Library', 'Logs', 'DiagnosticReports'))) record(line)
     setTimeout(() => pill.restartNotice(), 1000)
   }
 

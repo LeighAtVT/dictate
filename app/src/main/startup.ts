@@ -59,8 +59,13 @@ export type HandOffResult = 'run' | 'quit'
 
 const WAIT_MS = 3000
 
+/** v1's `Instance.isAgentLaunch`: launchd started this copy from the login agent `label`. */
+export function isAgentLaunch(env: Record<string, string | undefined>, label: string): boolean {
+  return env['XPC_SERVICE_NAME'] === label
+}
+
 export async function handOff(deps: HandOffDeps): Promise<HandOffResult> {
-  if (deps.env['XPC_SERVICE_NAME'] === deps.label) {
+  if (isAgentLaunch(deps.env, deps.label)) {
     // The copy that handed off may still be exiting; give it a moment before deciding we're a duplicate.
     const deadline = deps.now() + WAIT_MS
     while (!deps.requestLock()) {

@@ -44,6 +44,13 @@ describe('EventLog', () => {
     expect(fs.readFileSync(file, 'utf8').endsWith('hello\n')).toBe(true)
   })
 
+  // Swift's ISO8601DateFormatter default: whole seconds, UTC, no fraction.
+  it("stamps each line in v1's format, whole seconds with no fraction", () => {
+    const log = new EventLog(file, 1_000_000, () => new Date('2026-10-22T16:29:07.123Z'))
+    log.write('launch pid=1')
+    expect(fs.readFileSync(file, 'utf8')).toBe('2026-10-22T16:29:07Z launch pid=1\n')
+  })
+
   it('creates the log directory if missing', () => {
     const log = new EventLog(file)
     log.write('first')

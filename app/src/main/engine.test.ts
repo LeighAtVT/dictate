@@ -189,4 +189,16 @@ describe('Engine', () => {
 
     expect(events).toEqual([{ event: 'log', message: 'boom, something went wrong' }])
   })
+
+  it("logs why the engine couldn't start, then reports it down", async () => {
+    const engine = new Engine({ command: '/nonexistent/dictate-engine', args: [], restartDelayMs: 60_000 })
+    engines.push(engine)
+    const events: EngineEvent[] = []
+    engine.on('event', (e) => events.push(e))
+    const down = waitForEvent(engine, 'down')
+    engine.start()
+    await down
+
+    expect(events).toEqual([{ event: 'log', message: 'process error: spawn /nonexistent/dictate-engine ENOENT' }])
+  })
 })
