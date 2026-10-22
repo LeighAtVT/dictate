@@ -1,11 +1,10 @@
 # Dictate v2: test the Electron app (brain) on macOS and Windows, run the Swift tests, and build
-# a Dictate Preview zip on every push and on pull requests to main.
+# a Dictate Preview zip on every push, to any branch. A pull request from a branch in this repo
+# shows these push runs as its checks, so there's no separate pull_request trigger.
 name: v2
 
 on:
   push:
-  pull_request:
-    branches: [main]
 
 permissions:
   contents: read
