@@ -114,7 +114,7 @@ scripts/make-signing-cert.sh   # one time, if you haven't already for Dictate
 scripts/build-preview.sh       # build, sign, copy to /Applications/Dictate Preview.app, and open
 ```
 
-On first launch Dictate Preview copies your current Dictate's settings, vocabulary, shortcuts and history, and reuses its downloaded speech model, so there's nothing to set up twice. Your current Dictate's files are only read, never changed. macOS asks once whether Dictate Preview can use the OpenRouter key saved by Dictate; click **Always Allow**.
+On first launch Dictate Preview copies your current Dictate's settings, vocabulary, shortcuts and history, and reuses its downloaded speech model, so there's nothing to set up twice. Your current Dictate's files are only read, never changed. macOS asks once whether Dictate Preview can use the OpenRouter key saved by Dictate; click **Allow**. Dictate Preview copies the key into its own Keychain item, so it never needs to ask again, and **Allow** leaves your current Dictate's Keychain item as it was.
 
 ### Switching between the two
 
