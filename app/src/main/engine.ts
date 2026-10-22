@@ -127,6 +127,20 @@ export class Engine extends EventEmitter {
       this.emit('event', { event: 'log', message: `process error: ${err.message}` } satisfies EngineEvent)
       this.onExit()
     })
+    // A write that races the engine's death fails later with an 'error'
+    // (EPIPE) on stdin, which write()'s try/catch can't see. With no listener
+    // it is an uncaught exception, and Electron shows a modal error box. The
+    // 'exit' handler above already rejects pending requests and restarts, so
+    // each pipe only logs its first error (the error text, never what was
+    // written).
+    for (const name of ['stdin', 'stdout', 'stderr'] as const) {
+      let logged = false
+      child[name].on('error', (err: Error) => {
+        if (logged) return
+        logged = true
+        this.emit('event', { event: 'log', message: `${name} error: ${err.message}` } satisfies EngineEvent)
+      })
+    }
 
     this.emit('up')
 

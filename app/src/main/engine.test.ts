@@ -4,6 +4,7 @@
 // the FAKE_SCRIPT env var -- see that file's header comment for the
 // ';'-separated behavior grammar (echo, crash-on:<op>, hang-on:<op>,
 // emit:<raw>).
+import type { ChildProcess } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Engine, EngineGone, EngineTimeout } from './engine'
@@ -48,6 +49,49 @@ function eventQueue<T>(target: { on(event: string, fn: (arg: T) => void): unknow
       if (queued.length > 0) resolve(queued.shift() as T)
       else waiters.push(resolve)
     })
+}
+
+/** Reaches the private child process, to kill it or fail one of its pipes. */
+function childOf(engine: Engine): ChildProcess {
+  const child = (engine as unknown as { child: ChildProcess | null }).child
+  if (!child) throw new Error('engine has no child process')
+  return child
+}
+
+/**
+ * SIGKILLs the engine and blocks the event loop until the process is surely
+ * dead, so Node hasn't yet handled its 'exit' when the caller writes next.
+ * That is the race a real crash opens: the pipe's far end is gone, and the
+ * next stdin write fails asynchronously with EPIPE.
+ */
+function killAndBlock(engine: Engine): void {
+  childOf(engine).kill('SIGKILL')
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300)
+}
+
+/**
+ * Runs `fn` with Vitest's own uncaught-exception listeners swapped out for
+ * a recorder, so a stream 'error' nobody listens for fails the assertion in
+ * this test (it would crash Electron's main process) instead of surfacing
+ * as an unattributed run error.
+ */
+async function recordUncaught(fn: () => Promise<void>): Promise<unknown[]> {
+  const uncaught: unknown[] = []
+  const saved = process.listeners('uncaughtException')
+  process.removeAllListeners('uncaughtException')
+  const record = (err: unknown): void => {
+    uncaught.push(err)
+  }
+  process.on('uncaughtException', record)
+  try {
+    await fn()
+    // Let any late async 'error' emit before judging.
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  } finally {
+    process.off('uncaughtException', record)
+    for (const listener of saved) process.on('uncaughtException', listener)
+  }
+  return uncaught
 }
 
 afterEach(async () => {
@@ -206,5 +250,61 @@ describe('Engine', () => {
 
     expect(downs).toBe(1)
     expect(events).toEqual([{ event: 'log', message: 'process error: spawn /nonexistent/dictate-engine ENOENT' }])
+  })
+
+  it('a request written just after the engine dies (EPIPE) does not throw; it rejects, logs once, and the engine restarts', async () => {
+    const engine = makeEngine('echo', 50)
+    const events: EngineEvent[] = []
+    engine.on('event', (e) => events.push(e))
+    engine.start()
+    await engine.request({ op: 'context' })
+
+    const uncaught = await recordUncaught(async () => {
+      const nextUp = waitForEvent(engine, 'up')
+      killAndBlock(engine)
+      const pending = engine.request({ op: 'paste', text: 'words-that-must-not-be-logged' })
+      await expect(pending).rejects.toBeInstanceOf(EngineGone)
+      await nextUp
+    })
+
+    expect(uncaught).toEqual([])
+    const logs = events.filter((e) => e.event === 'log').map((e) => (e as { message: string }).message)
+    expect(logs.filter((m) => m.startsWith('stdin error:'))).toEqual(['stdin error: write EPIPE'])
+    expect(logs.some((m) => m.includes('words-that-must-not-be-logged'))).toBe(false)
+    // The restarted engine answers.
+    await expect(engine.request({ op: 'context' })).resolves.toMatchObject({ appId: 'test.app' })
+  })
+
+  it('stop() just after the engine dies (quit write hits EPIPE) still resolves without throwing', async () => {
+    const engine = makeEngine('echo', 50)
+    let ups = 0
+    engine.on('up', () => ups++)
+    engine.start()
+    await engine.request({ op: 'context' })
+
+    const uncaught = await recordUncaught(async () => {
+      killAndBlock(engine)
+      await engine.stop()
+    })
+
+    expect(uncaught).toEqual([])
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    expect(ups).toBe(1) // stopped on purpose: no restart
+  })
+
+  it.each(['stdout', 'stderr'] as const)('an error on the engine %s is logged, not thrown', async (name) => {
+    const engine = makeEngine('echo', 50)
+    const events: EngineEvent[] = []
+    engine.on('event', (e) => events.push(e))
+    engine.start()
+    await engine.request({ op: 'context' })
+
+    const uncaught = await recordUncaught(async () => {
+      const err = Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' })
+      childOf(engine)[name]?.destroy(err)
+    })
+
+    expect(uncaught).toEqual([])
+    expect(events).toContainEqual({ event: 'log', message: `${name} error: read ECONNRESET` })
   })
 })
