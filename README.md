@@ -114,7 +114,7 @@ Only one of them should listen at a time. In Dictate Preview's menu-bar menu:
 
 ### Your OpenRouter key
 
-Polish, Edit by voice and translation use OpenRouter, and everyone uses their own key. Paste yours under menu-bar icon → **Settings… → Polish**. It's stored in your Mac's Keychain, separately from the current Dictate's.
+Polish, Edit by voice and translation use OpenRouter with your own key. If Dictate Preview didn't pick up your key from the current Dictate, paste it under menu-bar icon → **Settings… → Polish**. It's stored in your Mac's Keychain, separately from the current Dictate's.
 
 ### Where things are
 
