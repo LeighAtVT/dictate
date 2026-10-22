@@ -29,7 +29,10 @@ import Testing
     @Test func cachedSecretNeverBlocksWhileLoading() async {
         let gate = DispatchSemaphore(value: 0)
         let secret = CachedSecret { gate.wait(); return "k" } // like a Keychain prompt nobody has answered
-        let loader = Task.detached { secret.value() }
+        // The blocked load gets a thread of its own, the way the engine runs Keychain reads. On
+        // Swift's cooperative pool it would hold a pool thread that this test body needs in order
+        // to reach `gate.signal()`, and with a one-thread pool the test would never finish.
+        let loader = Task { await onOwnThread { secret.value() } }
         try? await Task.sleep(for: .milliseconds(50))
         let start = Date()
         #expect(secret.value() == nil) // still loading: answer right away

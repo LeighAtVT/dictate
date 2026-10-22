@@ -136,7 +136,7 @@ public final class Desktop: @unchecked Sendable {
     /// arriving while the first is still blocked gets `nil` back immediately rather than also
     /// blocking.
     public func secretGet() async throws -> [String: JSONValue] {
-        let value = try await onOwnThread { [secretCache] in secretCache.value() }
+        let value = await onOwnThread { [secretCache] in secretCache.value() }
         return ["value": value.map(JSONValue.string) ?? .null]
     }
 
@@ -161,20 +161,7 @@ public final class Desktop: @unchecked Sendable {
     /// lives under a different service; this is strictly v1's legacy item for one-time import).
     /// Never writes or deletes it.
     public func legacyKey() async throws -> [String: JSONValue] {
-        let key = try await onOwnThread { [legacyStore] in legacyStore.read() }
+        let key = await onOwnThread { [legacyStore] in legacyStore.read() }
         return ["key": key.map(JSONValue.string) ?? .null]
-    }
-}
-
-/// Runs `work` on a new thread of its own and resumes the caller with its result or error.
-///
-/// For calls that can block a thread for an unbounded time, like a Keychain read waiting on an
-/// unlock or "allow access" prompt. `Task.detached` isn't enough: it still runs on Swift's
-/// cooperative thread pool, which has only one thread per CPU core, so a blocked call there
-/// stalls every other request's async work until the prompt is answered. Keychain calls are rare
-/// (a few per launch, plus Settings), so a thread per call costs nothing that matters.
-func onOwnThread<T: Sendable>(_ work: @escaping @Sendable () throws -> T) async throws -> T {
-    try await withCheckedThrowingContinuation { continuation in
-        Thread { continuation.resume(with: Result { try work() }) }.start()
     }
 }
