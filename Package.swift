@@ -6,6 +6,7 @@ let package = Package(
     platforms: [.macOS(.v14)],
     products: [
         .executable(name: "Dictate", targets: ["DictateApp"]),
+        .executable(name: "dictate-engine", targets: ["DictateEngine"]),
     ],
     targets: [
         .binaryTarget(
@@ -15,9 +16,21 @@ let package = Package(
         ),
         .target(name: "DictateCore", dependencies: ["whisper"]),
         .executableTarget(name: "DictateApp", dependencies: ["DictateCore"]),
+        .target(name: "EngineKit", dependencies: ["DictateCore"], path: "native/mac/EngineKit"),
+        .executableTarget(
+            name: "DictateEngine",
+            dependencies: ["DictateCore", "EngineKit"],
+            path: "native/mac/DictateEngine"
+        ),
         .testTarget(
             name: "DictateCoreTests",
             dependencies: ["DictateCore", "whisper"],
+            resources: [.copy("Fixtures")]
+        ),
+        .testTarget(
+            name: "DictateEngineTests",
+            dependencies: ["EngineKit", "DictateCore"],
+            path: "native/mac/Tests/DictateEngineTests",
             resources: [.copy("Fixtures")]
         ),
     ]

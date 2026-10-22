@@ -4,8 +4,8 @@ import Foundation
 public enum DictationMode: Sendable, Equatable {
     case dictate, edit, note
 
-    static let shiftBits: UInt64 = 0x02 | 0x04 // left, right
-    static let controlBits: UInt64 = 0x01 | 0x2000 // left, right
+    public static let shiftBits: UInt64 = 0x02 | 0x04 // left, right
+    public static let controlBits: UInt64 = 0x01 | 0x2000 // left, right
 
     /// Shift → edit, Control → note (Control wins: a note never changes the document).
     /// The dictation key's own bit is ignored, so Right Shift as the key isn't read as Shift.

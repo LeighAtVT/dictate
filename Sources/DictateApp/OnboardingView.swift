@@ -1,32 +1,11 @@
 import AVFoundation
 import AppKit
 import ApplicationServices
+import DictateCore
 import SwiftUI
 
-enum Permissions {
-    static var microphone: Bool { AVCaptureDevice.authorizationStatus(for: .audio) == .authorized }
-    static var accessibility: Bool { AXIsProcessTrusted() }
-    static var allGranted: Bool { microphone && accessibility }
-
-    static func requestMicrophone() {
-        if AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined {
-            AVCaptureDevice.requestAccess(for: .audio) { _ in }
-        } else {
-            open("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
-        }
-    }
-
-    static func requestAccessibility() {
-        // Adds Dictate to the Accessibility list so it only needs switching on.
-        let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
-        _ = AXIsProcessTrustedWithOptions(options)
-        open("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
-    }
-
-    private static func open(_ url: String) {
-        if let url = URL(string: url) { NSWorkspace.shared.open(url) }
-    }
-}
+// `Permissions` moved to `Sources/DictateCore/Permissions.swift` (Dictate v2 Mac Preview, Task 5,
+// controller ruling R7) so the v2 engine can use it too; behavior here is unchanged.
 
 @MainActor
 final class PermissionState: ObservableObject {

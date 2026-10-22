@@ -1,0 +1,221 @@
+/* Dictate v2, Task 12: shared look for the Settings and Onboarding windows, close to SwiftUI's
+   grouped Form in v1 (light and dark). */
+:root {
+  color-scheme: light dark;
+  --bg: #ececec;
+  --group: #ffffff;
+  --border: rgba(0, 0, 0, 0.1);
+  --text: #1d1d1f;
+  --secondary: rgba(0, 0, 0, 0.55);
+  --green: #28a745;
+  --red: #d70015;
+  --accent: #0a64d6;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1e1e1e;
+    --group: #2a2a2a;
+    --border: rgba(255, 255, 255, 0.1);
+    --text: #f2f2f2;
+    --secondary: rgba(255, 255, 255, 0.55);
+    --green: #32d74b;
+    --red: #ff453a;
+    --accent: #3b8cf0;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+html,
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.4 -apple-system, BlinkMacSystemFont, sans-serif;
+  cursor: default;
+  user-select: none;
+}
+input,
+textarea {
+  user-select: text;
+}
+input,
+textarea,
+select,
+button {
+  font: inherit;
+  color: inherit;
+}
+input[type='text'],
+input[type='password'],
+textarea {
+  width: 100%;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--group);
+}
+textarea {
+  resize: none;
+}
+button {
+  padding: 3px 12px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--group);
+}
+button:disabled {
+  opacity: 0.45;
+}
+button.destructive {
+  color: var(--red);
+}
+button.borderless {
+  border: none;
+  background: none;
+  padding: 0 4px;
+}
+select {
+  padding: 2px 4px;
+}
+
+.secondary {
+  color: var(--secondary);
+}
+.green {
+  color: var(--green);
+}
+.caption {
+  font-size: 11px;
+}
+.callout {
+  font-size: 12px;
+}
+.mono {
+  font-family: ui-monospace, Menlo, monospace;
+}
+
+/* Settings window: a TabView of six tabs. */
+.tabs {
+  display: flex;
+  justify-content: center;
+  gap: 2px;
+  margin-bottom: 12px;
+}
+.tabs [role='tab'] {
+  border-radius: 6px;
+  padding: 3px 14px;
+}
+.tabs [role='tab'][aria-selected='true'] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.settings {
+  padding: 20px;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+.pane {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+
+/* Grouped form sections. */
+.section h3 {
+  margin: 4px 0 4px 2px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.group {
+  background: var(--group);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: space-between;
+}
+.row.baseline {
+  align-items: baseline;
+}
+.row.start {
+  justify-content: flex-start;
+}
+.spacer {
+  flex: 1;
+}
+.model-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* Lists (Shortcuts, Apps). */
+.list {
+  flex: 1;
+  overflow-y: auto;
+  background: var(--group);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  min-height: 0;
+}
+.list-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.list-row:last-child {
+  border-bottom: none;
+}
+.list-row .grow {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Onboarding window. */
+.onboarding {
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.onboarding h1 {
+  margin: 0;
+  font-size: 17px;
+}
+.step {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+.step .mark {
+  font-size: 17px;
+  width: 20px;
+  text-align: center;
+}
+.step .body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+}
+.step .title {
+  font-weight: 600;
+}

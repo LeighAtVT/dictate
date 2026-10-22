@@ -88,3 +88,59 @@ scripts/build-app.sh           # build, sign, copy to /Applications, and launch
 - Audio is kept in memory only while you're talking and is never saved or sent anywhere.
 - With polish on, only the transcribed text is sent to OpenRouter and the model you picked, and only to providers with zero data retention that don't train on it.
 - History (your last 50 messages, deleted after 7 days) is stored only on your Mac in `~/Library/Application Support/Dictate/`.
+
+## Dictate Preview (v2)
+
+Dictate Preview is the next version of Dictate, being tested next to the current one. It does the same job with the same keys and settings, but its menu-bar app and settings windows are rebuilt (in Electron), and the speech-to-text part runs as a small separate program inside the app. It's a preview: expect rough edges, and keep the current Dictate installed so you can switch back.
+
+### Download
+
+Dictate Preview is published as a prerelease on the [Releases page](https://github.com/LeighAtVT/dictate/releases). The first one is `v2.0.0-beta.1`.
+
+1. Download the Dictate Preview zip from the newest v2 release and double-click it to unzip.
+2. Drag **Dictate Preview** into your **Applications** folder.
+3. The zip isn't signed by a developer Apple trusts, so macOS warns you the first time you open it. Right-click **Dictate Preview** in Applications, choose **Open**, then click **Open** again. If macOS offers no **Open** button (macOS 15 and newer), open **System Settings → Privacy & Security**, scroll down, and click **Open Anyway**.
+4. A setup window asks for two permissions. Grant both: **Microphone**, so it can hear you, and **Accessibility**, so it can see which key you pressed and paste the text.
+
+macOS may forget these permissions when you install a newer download. If dictation stops working after an update, turn both on again in **System Settings → Privacy & Security**.
+
+### Install from a clone
+
+Building it on your own Mac signs it with your own certificate, so macOS keeps its permissions across updates. You need Apple's Command Line Tools (`xcode-select --install`) and Node.js (CI uses Node 26).
+
+```sh
+git clone https://github.com/LeighAtVT/dictate.git && cd dictate
+scripts/make-signing-cert.sh   # one time, if you haven't already for Dictate
+scripts/build-preview.sh       # build, sign, copy to /Applications/Dictate Preview.app, and open
+```
+
+On first launch Dictate Preview copies your current Dictate's settings, vocabulary, shortcuts and history, and reuses its downloaded speech model, so there's nothing to set up twice. Your current Dictate's files are only read, never changed. macOS asks once whether Dictate Preview can use the OpenRouter key saved by Dictate; click **Allow**. Dictate Preview copies the key into its own Keychain item, so it never needs to ask again, and **Allow** leaves your current Dictate's Keychain item as it was.
+
+### Switching between the two
+
+Only one of them should listen at a time. In Dictate Preview's menu-bar menu:
+
+- **Pause old Dictate while testing** quits the current Dictate and stops it starting at login.
+- **Switch back to old Dictate** starts the current Dictate again (and at login), and quits Dictate Preview.
+
+### Your OpenRouter key
+
+Polish, Edit by voice and translation use OpenRouter with your own key. If Dictate Preview didn't pick up your key from the current Dictate, paste it under menu-bar icon → **Settings… → Polish**. It's stored in your Mac's Keychain, separately from the current Dictate's.
+
+### Where things are
+
+- Settings, history, vocabulary, shortcuts and the speech model: `~/Library/Application Support/Dictate Preview`
+- Log: `~/Library/Logs/Dictate Preview/dictate.log`. Menu-bar icon → **Copy diagnostics** copies a summary to paste into a bug report. It never includes your key or anything you dictated.
+
+### Build and test
+
+```sh
+npm --prefix app ci                       # one time: the app's dependencies
+npm --prefix app test                     # the app's tests
+npm --prefix app run typecheck
+scripts/test.sh                           # the Swift tests (the speech-model tests skip if the model isn't downloaded)
+scripts/build-preview.sh --no-open        # build and install, but don't open
+scripts/build-preview.sh --no-install     # build and zip only, to app/dist/Dictate-Preview-mac.zip
+```
+
+`scripts/build-preview.sh` signs with the "Dictate Local Signing" certificate. Set `DICTATE_SIGN_IDENTITY` to use another identity, or to `-` for an ad hoc signature (the zip is then named `Dictate-Preview-mac-UNSIGNED.zip`). Every push runs the app's tests on macOS and Windows and the Swift tests and build on macOS. Each run also keeps the zip it built, but only people signed in to GitHub can download it, and it is deleted after 90 days. To try the app, download it from the [Releases page](https://github.com/LeighAtVT/dictate/releases) instead.

@@ -3,7 +3,7 @@ import Testing
 @testable import DictateCore
 
 /// Real-model check that the vocabulary prompt gets custom terms spelled right, plus a latency report.
-@Suite(.serialized, .enabled(if: modelPresent, "Whisper model not downloaded"))
+@Suite(.serialized, .enabled(if: modelPresent, "Whisper model not downloaded"), .oneModelSuiteAtATime)
 struct AccuracyTests {
     static let cases: [(fixture: String, terms: [String])] = [
         ("vocab-1", ["Priya", "Supabase"]),
@@ -14,7 +14,7 @@ struct AccuracyTests {
     ]
 
     @Test func vocabularyTermsSpelledCorrectly() async throws {
-        let t = try Transcriber(modelURL: realModelURL)
+        let t = try await loadTranscriber()
         var times: [TimeInterval] = []
         for c in Self.cases {
             let samples = try loadFixture(c.fixture)

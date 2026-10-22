@@ -1,0 +1,202 @@
+import AppKit
+import DictateCore
+import EngineKit
+import Foundation
+
+// Dictate v2 Mac Preview, Task 3: the real engine protocol (JSON-line
+// requests and events, spec section 2.3) replaces the spike's bare
+// print-and-tap. The spike's periodic accessibility/microphone status
+// reporting and 3-second test recording were removed once the Task 1 spike
+// passed.
+//
+// Task 4: the spike's inline Fn-only `KeyTap` (above, now removed) is
+// replaced by `EngineKit.KeyTap`, which reports the talk key, other modifier
+// changes, Esc, and "some other key" with modifier names instead of a bare
+// `down` flag, and supports changing the hotkey at runtime via `setHotkey`.
+
+/// Serializes every stdout write behind one queue: `Server` dispatches each
+/// request in its own `Task`, so without this, two replies' JSON could
+/// interleave mid-line.
+private let outputQueue = DispatchQueue(label: "com.leigh.dictate.engine.output")
+
+private func writeLine(_ line: String) {
+    outputQueue.sync {
+        print(line)
+        fflush(stdout)
+    }
+}
+
+/// `setHotkey`'s reply for a raw value that isn't one of `Hotkey`'s cases. `description` (not the
+/// unparsed raw value, which is never echoed back) becomes the `EngineReply.error` message.
+private struct UnknownHotkey: Error, CustomStringConvertible {
+    var description: String { "unknown hotkey" }
+}
+
+/// Finds `--name value` in the CLI arguments.
+private func argumentValue(_ name: String, in arguments: [String]) -> String? {
+    guard let index = arguments.firstIndex(of: name), index + 1 < arguments.count else { return nil }
+    return arguments[index + 1]
+}
+
+let arguments = CommandLine.arguments
+guard let dataDirPath = argumentValue("--data-dir", in: arguments),
+      let keychainService = argumentValue("--keychain-service", in: arguments) else {
+    writeLine(encodeLine(EngineEvent.log(message: "usage: dictate-engine --data-dir <path> --keychain-service <service>")))
+    exit(2)
+}
+
+let dataDir = URL(fileURLWithPath: dataDirPath)
+let speech = Speech(
+    recorder: AudioRecorder(),
+    modelDirectory: dataDir.appendingPathComponent("models"),
+    downloader: URLSessionDownloader(),
+    makeTranscriber: { try Transcriber(modelURL: $0) },
+    emit: { event in writeLine(encodeLine(event)) }
+)
+
+#if DICTATE_E2E
+// Task 11 (ruling R3): `--e2e` builds only. The brain passes this from env DICTATE_TEST_AUDIO;
+// `stopRecording` then transcribes that file instead of the microphone. The path isn't logged.
+if let testAudio = argumentValue("--test-audio", in: arguments) {
+    speech.testAudioURL = URL(fileURLWithPath: testAudio)
+    writeLine(encodeLine(EngineEvent.log(message: "e2e build: test audio replaces the microphone")))
+}
+#endif
+
+/// Task 11 (Review Focus 1): when the talk key last went down, by the monotonic clock, so
+/// `startRecording` can log how long the key-down → brain → `startRecording` round trip plus the
+/// microphone start took. Written on the main thread (tap callback), read from a request `Task`.
+private final class KeyDownClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var at: UInt64?
+    func mark() { lock.withLock { at = DispatchTime.now().uptimeNanoseconds } }
+    /// The last key-down time, cleared so a later recording can't reuse it.
+    func take() -> UInt64? { lock.withLock { defer { at = nil }; return at } }
+}
+private let keyDownClock = KeyDownClock()
+
+private let milliseconds: @Sendable (UInt64, UInt64) -> String = { from, to in
+    String(format: "%.1f", Double(to &- from) / 1_000_000)
+}
+
+let keyTap = KeyTap(hotkey: .default, emit: { event in
+    if case .key(down: true, _) = event { keyDownClock.mark() }
+    writeLine(encodeLine(event))
+})
+
+// Same wiring as v1's `Sources/DictateApp/AppDelegate.swift` (`inserter`/`pipeline`'s `selection`).
+let frontmostContext = FrontmostContext()
+let desktop = Desktop(
+    frontmostContext: frontmostContext,
+    inserter: Inserter(pasteboard: SystemPasteboard(), keys: CGEventKeySender(), hasFocusedTextField: { frontmostContext.hasFocusedTextField() }),
+    selectionReader: SelectionReader(probe: { frontmostContext.selection() }, pasteboard: SystemPasteboard(), keys: CGEventKeySender()),
+    secretStore: KeychainStore(service: keychainService, account: "openrouter"),
+    // Always v1's real service, regardless of `--keychain-service` (the Preview build's own secret
+    // lives under a different service) — see `Desktop.legacyKey`'s doc comment.
+    legacyStore: KeychainStore(service: "com.leigh.dictate", account: "openrouter")
+)
+
+let handlers = Handlers(
+    startRecording: {
+        let requested = DispatchTime.now().uptimeNanoseconds
+        try speech.start()
+        let started = DispatchTime.now().uptimeNanoseconds
+        let micStart = milliseconds(requested, started)
+        if let keyDown = keyDownClock.take() {
+            writeLine(encodeLine(EngineEvent.log(message:
+                "recording started \(milliseconds(keyDown, started)) ms after key down "
+                + "(key down to request \(milliseconds(keyDown, requested)) ms, mic start \(micStart) ms)")))
+        } else {
+            writeLine(encodeLine(EngineEvent.log(message: "recording started (mic start \(micStart) ms)")))
+        }
+        return [:]
+    },
+    cancelRecording: {
+        speech.cancel()
+        return [:]
+    },
+    stopRecording: { language, vocabulary in
+        let outcome = try await speech.stop(language: language, vocabulary: vocabulary)
+        var fields: [String: JSONValue] = [
+            "result": .string(outcome.result),
+            "seconds": .number(outcome.seconds)
+        ]
+        if let text = outcome.text {
+            fields["text"] = .string(text)
+        }
+        return fields
+    },
+    context: desktop.context,
+    selection: desktop.selection,
+    paste: desktop.paste,
+    copy: desktop.copy,
+    setHotkey: { key in
+        guard let hotkey = Hotkey(rawValue: key) else { throw UnknownHotkey() }
+        // `keyTap.hotkey` is read on the main thread by the tap callback without locking, so it's
+        // only ever written from the main thread too.
+        await MainActor.run { keyTap.hotkey = hotkey }
+        return [:]
+    },
+    permissions: desktop.permissions,
+    requestPermission: desktop.requestPermission,
+    secretGet: desktop.secretGet,
+    secretSet: desktop.secretSet,
+    secretDelete: desktop.secretDelete,
+    legacyKey: desktop.legacyKey,
+    quit: {
+        // `shutdownThenExit` awaits `speech.shutdown()` to full completion
+        // before even scheduling `exit` — if a transcription is in flight,
+        // `Transcriber.close()` queues behind it on the actor, so this can
+        // take a while. Only once that's done does this closure return,
+        // letting `Server` write the reply; `exit` then fires a short grace
+        // period later, giving that reply (and its `fflush`) time to land.
+        await shutdownThenExit(shutdown: { await speech.shutdown() }, queue: outputQueue, exit: { exit($0) })
+        return [:]
+    }
+)
+
+let server = Server(output: writeLine, handlers: handlers)
+
+Task.detached {
+    await speech.loadModel()
+}
+
+/// `true` for a `{"id":N,"op":"quit",...}` line. Checked so the reader loop can stop
+/// itself without also racing the `quit` handler's own shutdown+exit: if the brain
+/// closes stdin right after sending `quit` (plausible for a graceful shutdown), the
+/// next `readLine()` would otherwise see EOF and run the EOF shutdown path too,
+/// potentially exiting before the `quit` request's own reply is written.
+private let isQuitRequest: @Sendable (String) -> Bool = { line in
+    guard let object = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any] else { return false }
+    return object["op"] as? String == "quit"
+}
+
+let stdinThread = Thread {
+    while let line = readLine(strippingNewline: true) {
+        server.receive(line)
+        if isQuitRequest(line) {
+            // The dispatched `quit` handler (above) now owns shutdown + exit
+            // via the same `shutdownThenExit` routine as the EOF path below;
+            // stop reading so a closed pipe's EOF can't race ahead of it.
+            return
+        }
+    }
+    // EOF with no `quit` seen: the parent (the Electron brain) closed the
+    // pipe some other way, e.g. it exited. Same shutdown-then-exit routine
+    // as the `quit` handler, so the two paths can't diverge.
+    Task {
+        await shutdownThenExit(shutdown: { await speech.shutdown() }, queue: outputQueue, exit: { exit($0) })
+    }
+}
+stdinThread.start()
+
+// `start()` returns false without Accessibility permission. There's no "start tap" request in
+// the protocol for the brain to retry with, so the engine retries on its own, once a second,
+// until the tap is up — e.g. once the user grants Accessibility in System Settings.
+func startKeyTapRetrying() {
+    guard !keyTap.start() else { return }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 1) { startKeyTapRetrying() }
+}
+startKeyTapRetrying()
+
+RunLoop.main.run()

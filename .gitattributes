@@ -1,0 +1,3 @@
+# LF everywhere, including Windows checkouts (CI runs the brain tests on Windows, where git
+# would otherwise convert text files to CRLF).
+* text=auto eol=lf
