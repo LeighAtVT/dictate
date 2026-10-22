@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { HistoryEntry } from './core/history'
 import {
+  COPY_DIAGNOSTICS,
   ENGINE_FAILED,
   MODEL_FAILED,
   MODEL_PREPARING,
@@ -30,7 +31,8 @@ const base: TrayState = {
   hasKey: true,
   modelStatus: null,
   engineFailed: false,
-  sideBySide: null
+  sideBySide: null,
+  update: null
 }
 
 /** One line per item: labels, `---` for separators, `[x]` for disabled, `>` for submenus. */
@@ -58,6 +60,7 @@ describe('trayMenu', () => {
       '  [x] Nothing yet',
       '---',
       'Settings… (Command+,)',
+      'Copy diagnostics',
       '---',
       'Quit Dictate Preview (Command+Q)'
     ])
@@ -85,6 +88,7 @@ describe('trayMenu', () => {
       '---',
       'Polish off — add OpenRouter key',
       'Settings… (Command+,)',
+      'Copy diagnostics',
       '---',
       'Quit Dictate Preview (Command+Q)'
     ])
@@ -105,6 +109,7 @@ describe('trayMenu', () => {
       ['Paste raw instead', 'pasteRaw'],
       ['Polish off — add OpenRouter key', 'openSettings'],
       ['Settings…', 'openSettings'],
+      ['Copy diagnostics', 'copyDiagnostics'],
       ['Quit Dictate Preview', 'quit']
     ])
   })
@@ -146,6 +151,37 @@ describe('trayMenu', () => {
     const history = trayMenu({ ...base, recent: [entry(long)] }).find((i) => i.kind === 'submenu')
     const row = history?.kind === 'submenu' ? history.items[0] : null
     expect(row).toMatchObject({ kind: 'action', label: `${'x'.repeat(57)}…`, payload: long })
+  })
+})
+
+describe('update and diagnostics items (Task 15)', () => {
+  const update = { version: '2.0.0-beta.2', url: 'https://github.com/LeighAtVT/dictate/releases/tag/v2.0.0-beta.2' }
+
+  it('shows "Update available (v…)" above Settings when a newer release is known, opening its page', () => {
+    const menu = trayMenu({ ...base, hasKey: false, update })
+    expect(outline(menu).slice(-7)).toEqual([
+      '---',
+      'Update available (v2.0.0-beta.2)',
+      'Polish off — add OpenRouter key',
+      'Settings… (Command+,)',
+      'Copy diagnostics',
+      '---',
+      'Quit Dictate Preview (Command+Q)'
+    ])
+    expect(menu.find((i) => i.kind === 'action' && i.action === 'openUpdate')).toMatchObject({
+      enabled: true,
+      payload: update.url
+    })
+  })
+
+  it('shows no update item without a known update', () => {
+    expect(outline(trayMenu(base)).filter((l) => l.startsWith('Update'))).toEqual([])
+  })
+
+  it('always offers Copy diagnostics, even when the engine keeps stopping', () => {
+    const item = trayMenu({ ...base, engineFailed: true }).find((i) => i.kind === 'action' && i.action === 'copyDiagnostics')
+    expect(item).toMatchObject({ label: COPY_DIAGNOSTICS, enabled: true })
+    expect(ENGINE_FAILED).toContain(COPY_DIAGNOSTICS)
   })
 })
 

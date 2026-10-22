@@ -9,6 +9,9 @@ import { MODEL_PREPARING, modelStatusLine } from './trayModel'
 type ModelEvent = Extract<EngineEvent, { event: 'model' }>
 type Permissions = ReplyMap['permissions']
 
+/** The engine process, for Copy diagnostics: before the first 'up', running, restarting, given up on. */
+export type EngineState = 'starting' | 'up' | 'down' | 'failed'
+
 export class AppStatus {
   modelReady = false
   /** The menu's model line; null when there's nothing to say. */
@@ -17,6 +20,9 @@ export class AppStatus {
   engineFailed = false
   /** Null until the first permissions report. */
   permissions: Permissions | null = null
+  engine: EngineState = 'starting'
+  /** The engine's latest `model` event, progress ticks included; null before the first. */
+  lastModelEvent: ModelEvent | null = null
   private lastModelState: ModelEvent['state'] | null = null
   /** Whether permissions were OK at the last report; null before the first. */
   private lastOK: boolean | null = null
@@ -29,6 +35,7 @@ export class AppStatus {
 
   /** Returns a log line when the model's state changed (not on every download-progress tick). */
   model(event: ModelEvent): string | null {
+    this.lastModelEvent = event
     this.modelStatus = modelStatusLine(event)
     this.modelReady = event.state === 'ready'
     const changed = event.state !== this.lastModelState
@@ -36,8 +43,13 @@ export class AppStatus {
     return changed ? `speech model ${event.state}` : null
   }
 
+  engineUp(): void {
+    this.engine = 'up'
+  }
+
   /** The engine process went away; it reloads the model when it comes back. */
   engineDown(): void {
+    this.engine = 'down'
     this.modelReady = false
     this.modelStatus = MODEL_PREPARING
     this.lastModelState = null
@@ -45,6 +57,7 @@ export class AppStatus {
 
   /** The engine won't be restarted, so no model is coming: the menu shows only the failure. */
   engineFailedForGood(): void {
+    this.engine = 'failed'
     this.engineFailed = true
     this.modelReady = false
     this.modelStatus = null

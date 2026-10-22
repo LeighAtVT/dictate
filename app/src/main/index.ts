@@ -4,9 +4,10 @@
 // (ipc.ts), the way v1's `AppDelegate.applicationDidFinishLaunching` does
 // (Sources/DictateApp/AppDelegate.swift), plus the login agent hand-off (startup.ts), the
 // first-launch copy of v1's data (migrate.ts), and pausing or switching back to v1
-// (side-by-side.ts). Logic lives in those modules; this file only connects them. Never log
-// dictated text, the API key, or request bodies here.
-import { app, ipcMain, powerMonitor, shell, systemPreferences } from 'electron'
+// (side-by-side.ts), plus dictate.log (appLog.ts), the update check (updateCheck.ts), and Copy
+// diagnostics (diagnostics.ts). Logic lives in those modules; this file only connects them.
+// Never log dictated text, the API key, or request bodies here.
+import { app, clipboard, ipcMain, powerMonitor, shell, systemPreferences } from 'electron'
 import fs from 'node:fs'
 import { join } from 'node:path'
 import { atomicWrite } from './core/atomicWrite'
@@ -36,10 +37,12 @@ import { handOff, isAgentLaunch } from './startup'
 import { isSettingsTab, SETTINGS_CHANGED } from '../shared/dictate'
 import { dictationReporter, launchLine, logRecorder, previousRunLines } from './appLog'
 import { AppStatus } from './appStatus'
+import { copyDiagnostics, diagnostics } from './diagnostics'
 import { PillWindow } from './pill'
 import { PillPresenter } from './pillPresenter'
 import { TrayController } from './tray'
 import { phaseAfter, sideBySide, trayIcon, type DictationPhase } from './trayModel'
+import { checkForUpdate, isReleaseUrl, scheduleUpdateChecks, type Update } from './updateCheck'
 import { variantFor } from './variant'
 import { AppWindows } from './windows'
 
@@ -250,6 +253,16 @@ async function start(): Promise<void> {
     (sender) => windows.owns(sender)
   )
 
+  // --- Update check: at launch, then every 24 h (Ruling R41) -----------------------------------
+  let update: Update | null = null
+  scheduleUpdateChecks(
+    () => checkForUpdate(fetch, app.getVersion()),
+    (found) => {
+      if (found && found.version !== update?.version) record(`update available: ${found.version}`)
+      update = found
+    }
+  )
+
   // --- Side by side with v1 (preview only): which item the tray shows -------------------------
   let v1: V1Status | null = null
   const probeV1 = serialProbe(async () => {
@@ -271,7 +284,8 @@ async function start(): Promise<void> {
       hasKey: apiKey !== null && apiKey.length > 0,
       modelStatus: status.modelStatus,
       engineFailed: status.engineFailed,
-      sideBySide: sideBySide(v1)
+      sideBySide: sideBySide(v1),
+      update
     }),
     {
       openOnboarding,
@@ -309,6 +323,32 @@ async function start(): Promise<void> {
           }
           probeV1()
         })
+      },
+      openUpdate: (url) => {
+        // The release page only (updateCheck.ts already filtered it); nothing else is opened.
+        if (isReleaseUrl(url)) void shell.openExternal(url)
+      },
+      copyDiagnostics: () => {
+        void copyDiagnostics({
+          text: () =>
+            diagnostics({
+              appVersion: app.getVersion(),
+              osVersion: process.getSystemVersion(),
+              variant,
+              status,
+              permissions: () => engine.request({ op: 'permissions' }),
+              hasKey: apiKey !== null && apiKey.length > 0,
+              settings: settings.get(),
+              update,
+              logFile: variant.logFile
+            }),
+          copy: (text) => engine.request({ op: 'copy', text }),
+          fallback: (text) => clipboard.writeText(text)
+        })
+          .then((via) => record(`diagnostics copied (${via === 'engine' ? 'engine' : 'app clipboard'})`))
+          .catch((error: unknown) =>
+            record(`diagnostics failed: ${error instanceof Error ? error.message : String(error)}`)
+          )
       },
       quit: () => app.quit()
     }
@@ -348,6 +388,7 @@ async function start(): Promise<void> {
   })
   engine.on('up', () => {
     record('engine up')
+    status.engineUp()
     pill.engineUp()
     keyRead = refreshKey()
   })

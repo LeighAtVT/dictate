@@ -4,11 +4,13 @@
 // time the menu opens. The icon rule is v1's `AppDelegate.render`/`refreshIcon`, and the model
 // status lines are v1's `AppDelegate.loadModel` strings, now driven by the engine's `model` events.
 // Task 13 adds the side-by-side item above Quit: "Pause old Dictate while testing" or "Switch back
-// to old Dictate" (side-by-side.ts).
+// to old Dictate" (side-by-side.ts). Task 15 adds "Update available (v…)" (updateCheck.ts, spec 2.2)
+// and "Copy diagnostics" (diagnostics.ts).
 import type { EngineEvent } from '../shared/protocol'
 import type { HistoryEntry } from './core/history'
 import type { PipelineState } from './core/pipeline'
 import type { V1Status } from './side-by-side'
+import type { Update } from './updateCheck'
 
 export type TrayIcon = 'idle' | 'listening' | 'working' | 'warning'
 
@@ -20,6 +22,8 @@ export type TrayAction =
   | 'openSettings'
   | 'pauseV1'
   | 'switchBackToV1'
+  | 'openUpdate'
+  | 'copyDiagnostics'
   | 'quit'
 
 export type TrayItem =
@@ -42,6 +46,8 @@ export interface TrayState {
   engineFailed: boolean
   /** Which side-by-side item to show (Task 13), or none. See `sideBySide`. */
   sideBySide: SideBySide
+  /** A newer release from the update check (Task 15), or null. */
+  update: Update | null
 }
 
 export type SideBySide = 'pause' | 'switchBack' | null
@@ -62,6 +68,7 @@ export function sideBySide(v1: V1Status | null): SideBySide {
 export const MODEL_PREPARING = 'Preparing speech model…'
 export const MODEL_FAILED = 'Speech model failed to download — relaunch to retry'
 export const ENGINE_FAILED = "Dictate's engine keeps stopping — use Copy diagnostics"
+export const COPY_DIAGNOSTICS = 'Copy diagnostics'
 export const HISTORY_LIMIT = 10
 
 const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
@@ -122,6 +129,16 @@ export function trayMenu(state: TrayState): TrayItem[] {
   items.push({ kind: 'submenu', label: 'History', items: history })
   items.push({ kind: 'separator' })
 
+  if (state.update !== null) {
+    // Opens the release page (spec 2.2: "with a download link"); index.ts checks the URL again.
+    items.push({
+      kind: 'action',
+      label: `Update available (v${state.update.version})`,
+      action: 'openUpdate',
+      enabled: true,
+      payload: state.update.url
+    })
+  }
   if (!state.hasKey) {
     // The key lives on the Polish tab, so open Settings there.
     items.push({
@@ -133,6 +150,7 @@ export function trayMenu(state: TrayState): TrayItem[] {
     })
   }
   items.push({ kind: 'action', label: 'Settings…', action: 'openSettings', enabled: true, accelerator: 'Command+,' })
+  items.push({ kind: 'action', label: COPY_DIAGNOSTICS, action: 'copyDiagnostics', enabled: true })
   items.push({ kind: 'separator' })
   if (state.sideBySide === 'pause') {
     items.push({ kind: 'action', label: PAUSE_V1, action: 'pauseV1', enabled: true })

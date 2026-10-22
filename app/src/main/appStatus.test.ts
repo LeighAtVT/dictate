@@ -57,6 +57,31 @@ describe('AppStatus: engine lifecycle', () => {
   })
 })
 
+describe('AppStatus: engine state and last model event, for diagnostics (Task 15)', () => {
+  it('tracks starting, up, down, and failed', () => {
+    const s = new AppStatus()
+    expect(s.engine).toBe('starting')
+    s.engineUp()
+    expect(s.engine).toBe('up')
+    s.engineDown()
+    expect(s.engine).toBe('down')
+    s.engineUp()
+    s.engineDown()
+    s.engineFailedForGood()
+    expect(s.engine).toBe('failed')
+  })
+
+  it('keeps the last model event, including progress ticks', () => {
+    const s = new AppStatus()
+    expect(s.lastModelEvent).toBeNull()
+    s.model({ event: 'model', state: 'downloading', fraction: 0.1 })
+    s.model({ event: 'model', state: 'downloading', fraction: 0.2 })
+    expect(s.lastModelEvent).toEqual({ event: 'model', state: 'downloading', fraction: 0.2 })
+    s.model({ event: 'model', state: 'ready' })
+    expect(s.lastModelEvent).toEqual({ event: 'model', state: 'ready' })
+  })
+})
+
 describe('AppStatus: permissions', () => {
   it('counts as OK until the first report arrives', () => {
     expect(new AppStatus().permissionsOK).toBe(true)

@@ -5,6 +5,11 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
+/** v1's timestamp: Swift's ISO8601DateFormatter default, UTC to the whole second. */
+export function logTimestamp(date: Date): string {
+  return date.toISOString().replace(/\.\d{3}Z$/, 'Z')
+}
+
 export class EventLog {
   private readonly file: string
   private readonly maxBytes: number
@@ -17,7 +22,7 @@ export class EventLog {
   }
 
   write(message: string): void {
-    const line = `${this.now().toISOString().replace(/\.\d{3}Z$/, 'Z')} ${message}\n`
+    const line = `${logTimestamp(this.now())} ${message}\n`
     const lineBytes = Buffer.byteLength(line, 'utf8')
     const dir = path.dirname(this.file)
     fs.mkdirSync(dir, { recursive: true })
