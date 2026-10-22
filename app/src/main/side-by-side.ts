@@ -37,8 +37,9 @@ export const execFileExec: Exec = (file, args) =>
     })
   })
 
+/** A launchd path, so always POSIX (the same on every OS the tests run on). */
 export function agentPlistPath(home: string, label: string): string {
-  return path.join(home, 'Library', 'LaunchAgents', `${label}.plist`)
+  return path.posix.join(home, 'Library', 'LaunchAgents', `${label}.plist`)
 }
 
 /**

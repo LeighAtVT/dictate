@@ -142,26 +142,34 @@ describe('NoteSaver', () => {
   })
 
   // @Test defaultToken: $YARDMASTER_CLI_TOKEN, else ~/.yardmaster/cli-token.
-  // HOME is overridden to a temp dir so this never touches the real
-  // ~/.yardmaster/cli-token on this machine.
+  // The home folder is overridden to a temp dir so this never touches the real
+  // ~/.yardmaster/cli-token on this machine. os.homedir() reads HOME, or USERPROFILE on
+  // Windows, so both are overridden.
   describe('defaultToken', () => {
     let prevEnv: string | undefined
     let prevHome: string | undefined
+    let prevProfile: string | undefined
     let fakeHome: string
+
+    const restore = (name: string, value: string | undefined): void => {
+      if (value === undefined) delete process.env[name]
+      else process.env[name] = value
+    }
 
     beforeEach(() => {
       prevEnv = process.env.YARDMASTER_CLI_TOKEN
       prevHome = process.env.HOME
+      prevProfile = process.env.USERPROFILE
       delete process.env.YARDMASTER_CLI_TOKEN
       fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'dictate-home-'))
       process.env.HOME = fakeHome
+      process.env.USERPROFILE = fakeHome
     })
 
     afterEach(() => {
-      if (prevEnv === undefined) delete process.env.YARDMASTER_CLI_TOKEN
-      else process.env.YARDMASTER_CLI_TOKEN = prevEnv
-      if (prevHome === undefined) delete process.env.HOME
-      else process.env.HOME = prevHome
+      restore('YARDMASTER_CLI_TOKEN', prevEnv)
+      restore('HOME', prevHome)
+      restore('USERPROFILE', prevProfile)
       fs.rmSync(fakeHome, { recursive: true, force: true })
     })
 
