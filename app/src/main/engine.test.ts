@@ -195,10 +195,16 @@ describe('Engine', () => {
     engines.push(engine)
     const events: EngineEvent[] = []
     engine.on('event', (e) => events.push(e))
+    let downs = 0
+    engine.on('down', () => downs++)
     const down = waitForEvent(engine, 'down')
     engine.start()
     await down
+    // Let any late 'error'/'exit' from the failed spawn arrive before counting.
+    await new Promise((resolve) => setImmediate(resolve))
+    await new Promise((resolve) => setTimeout(resolve, 20))
 
+    expect(downs).toBe(1)
     expect(events).toEqual([{ event: 'log', message: 'process error: spawn /nonexistent/dictate-engine ENOENT' }])
   })
 })

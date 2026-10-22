@@ -33,12 +33,13 @@ describe('RunJournal', () => {
   // @Test uncleanPreviousIsReported
   it('reports an unclean previous run', () => {
     const j = journal()
-    const first = new Date(1_000_000)
+    const first = new Date(1_000_123)
     j.begin(11, first)
     const previous = journal().begin(12, new Date())
     expect(previous?.pid).toBe(11)
     expect(previous?.cleanExit).toBe(false)
-    expect(previous?.launchedAt).toBe(first.toISOString())
+    // v1's JSONEncoder .iso8601: whole seconds.
+    expect(previous?.launchedAt).toBe('1970-01-01T00:16:40Z')
   })
 
   // @Test cleanPreviousIsNotReported

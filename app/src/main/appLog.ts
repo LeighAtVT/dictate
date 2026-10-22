@@ -1,8 +1,9 @@
 // Dictate v2, Task 14: what goes into dictate.log, kept out of index.ts so it can be tested. The
-// lines are v1's (Sources/DictateApp/AppDelegate.swift `startJournal`, `record`, `report`): the
+// lines follow v1 (Sources/DictateApp/AppDelegate.swift `startJournal`, `record`, `report`): the
 // launch line, an unexpected previous stop and its crash reports, and one line per finished
-// dictation. Never given dictated text, the key, or request bodies (global-constraints.md).
-import type { EventLog } from './core/eventLog'
+// dictation. v1 wrote the timing line to os_log only; v2 writes it to dictate.log. Never given
+// dictated text, the key, or request bodies (global-constraints.md).
+import { logTimestamp, type EventLog } from './core/eventLog'
 import type { PipelineOutcome, StageTimings } from './core/pipeline'
 import { RunJournal, type RunRecord } from './core/runJournal'
 import { outcomeLogLine } from './appStatus'
@@ -29,12 +30,18 @@ export function launchLine(o: { pid: number; version: string; agent: boolean; ac
  * v1 ("Dictate-…") and the preview ("Dictate Preview-…").
  */
 export function previousRunLines(previous: RunRecord, reportsDir: string): string[] {
-  const lines = [`previous run ended unexpectedly (pid=${previous.pid} launched ${previous.launchedAt})`]
-  for (const file of RunJournal.crashReports(reportsDir, new Date(previous.launchedAt))) lines.push(`crash report: ${file}`)
+  // v1 printed `launchedAt.ISO8601Format()`: whole seconds, whatever run.json holds.
+  const launchedAt = new Date(previous.launchedAt)
+  const lines = [`previous run ended unexpectedly (pid=${previous.pid} launched ${logTimestamp(launchedAt)})`]
+  for (const file of RunJournal.crashReports(reportsDir, launchedAt)) lines.push(`crash report: ${file}`)
   return lines
 }
 
-/** v1's `report`: one line per finished dictation (timings when pasted, the reason when failed). */
+/**
+ * One dictate.log line per finished dictation, after v1's `report`: the timing line when pasted
+ * (v1 sent that one to os_log only; v2 writes it to dictate.log), the reason when failed (v1's
+ * `record`), and the outcome type otherwise.
+ */
 export function dictationReporter(
   record: (message: string) => void,
   timings: () => StageTimings | null

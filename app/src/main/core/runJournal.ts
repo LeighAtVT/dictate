@@ -1,10 +1,12 @@
 // Ported from Sources/DictateCore/RunJournal.swift: the journal (remembers
-// whether the last run ended cleanly) plus the crash-report scan.
-// `Instance.isAgentLaunch`/`isDuplicate` are not ported here; they belong with
-// LaunchAgent, which hasn't landed in TS yet.
+// whether the last run ended cleanly) plus the crash-report scan. Dates are
+// v1's JSONEncoder .iso8601, whole seconds. `Instance.isAgentLaunch` lives in
+// startup.ts (`isAgentLaunch`), next to the login agent hand-off;
+// `Instance.isDuplicate` is the single-instance lock there.
 import fs from 'node:fs'
 import path from 'node:path'
 import { atomicWrite } from './atomicWrite'
+import { logTimestamp } from './eventLog'
 
 export interface RunRecord {
   pid: number
@@ -24,7 +26,7 @@ export class RunJournal {
   /** Records this launch. Returns the previous run only when it did not end cleanly. */
   begin(pid: number, now: Date): RunRecord | null {
     const previous = this.read()
-    this.write({ pid, launchedAt: now.toISOString(), cleanExit: false, exitReason: null })
+    this.write({ pid, launchedAt: logTimestamp(now), cleanExit: false, exitReason: null })
     if (!previous || previous.cleanExit) return null
     return previous
   }

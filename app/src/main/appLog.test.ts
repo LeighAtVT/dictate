@@ -50,10 +50,18 @@ describe('previousRunLines', () => {
       reports
     )
     expect(lines).toEqual([
-      `previous run ended unexpectedly (pid=77 launched ${launchedAt.toISOString()})`,
+      `previous run ended unexpectedly (pid=77 launched ${launchedAt.toISOString().replace(/\.\d{3}Z$/, 'Z')})`,
       `crash report: ${previewCrash}`,
       `crash report: ${v1Crash}`
     ])
+  })
+
+  it("prints the previous launch in v1's whole-second format", () => {
+    const lines = previousRunLines(
+      { pid: 77, launchedAt: '2026-10-22T16:28:54.123Z', cleanExit: false, exitReason: null },
+      path.join(dir, 'missing')
+    )
+    expect(lines).toEqual(['previous run ended unexpectedly (pid=77 launched 2026-10-22T16:28:54Z)'])
   })
 
   it('reports only the unclean run when the reports folder is missing', () => {
