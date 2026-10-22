@@ -1,0 +1,82 @@
+# Dictate v2: test the Electron app (brain) on macOS and Windows, run the Swift tests, and build
+# a Dictate Preview zip on every push and on pull requests to main.
+name: v2
+
+on:
+  push:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  brain:
+    name: brain (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - run: npm ci
+      - run: npm test
+
+  mac:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    env:
+      # Secrets can't be read in `if:`, so expose only whether the signing identity is configured.
+      HAS_SIGNING_IDENTITY: ${{ secrets.MAC_SIGNING_P12 != '' }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - name: Install app dependencies
+        run: npm ci
+        working-directory: app
+      - name: Swift tests (the speech-model tests skip without the model)
+        run: scripts/test.sh
+
+      - name: Import the signing identity
+        if: env.HAS_SIGNING_IDENTITY == 'true'
+        env:
+          MAC_SIGNING_P12: ${{ secrets.MAC_SIGNING_P12 }}
+          MAC_SIGNING_PASSWORD: ${{ secrets.MAC_SIGNING_PASSWORD }}
+        run: scripts/import-signing-cert-ci.sh
+      - name: Build Dictate Preview (signed)
+        if: env.HAS_SIGNING_IDENTITY == 'true'
+        run: scripts/build-preview.sh --no-install
+      - name: Upload Dictate-Preview-mac.zip
+        if: env.HAS_SIGNING_IDENTITY == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          path: app/dist/Dictate-Preview-mac.zip
+          archive: false
+          if-no-files-found: error
+
+      - name: Build Dictate Preview (unsigned, ad hoc)
+        if: env.HAS_SIGNING_IDENTITY != 'true'
+        env:
+          DICTATE_SIGN_IDENTITY: "-"
+        run: scripts/build-preview.sh --no-install
+      - name: Upload Dictate-Preview-mac-UNSIGNED.zip
+        if: env.HAS_SIGNING_IDENTITY != 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          path: app/dist/Dictate-Preview-mac-UNSIGNED.zip
+          archive: false
+          if-no-files-found: error
